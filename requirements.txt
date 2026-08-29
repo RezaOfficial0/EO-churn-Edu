@@ -1,0 +1,7 @@
+pandas
+scikit-learn
+catboost
+shap
+python-dotenv
+fastapi
+uvicorn[standard]

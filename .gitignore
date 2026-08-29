@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.idea/
+.DS_Store
+
+.env
+
+catboost_info/
+notebooks/catboost_info/
+
+saved_models/
+metrics/
+data/*.csv
