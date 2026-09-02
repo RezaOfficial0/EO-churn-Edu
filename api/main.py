@@ -15,12 +15,15 @@ from config import (
     MODEL_PATH,
     SHAP_TOP_N_FEATURES,
 )
+from src.logging_config import setup_logging
 from src.model.load import load_model
 from src.data.loader import data_loader
 from src.data.Validation import validate, DataValidationError
 from src.data.preprocess import daily_process
 from src.explainer.shap_explainer import create_explainer, explain_customers
 from pipeline.daily_pipeline import run_daily_pipeline
+
+setup_logging()
 
 logger = logging.getLogger(__name__)
 

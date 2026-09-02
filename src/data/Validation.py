@@ -47,7 +47,15 @@ def validate(df, required_columns: list[str], max_null_ratio: float = 0.05) -> d
     }
 
     if duplicate_count > 0:
-        logger.warning("Duplicated value found in dataset.", duplicate_count)
+        # H1 FIX: the previous call was
+        #     logger.warning("Duplicated value found in dataset.", duplicate_count)
+        # -- a message string with no placeholder, plus a positional argument.
+        # logging could not format it and swallowed the record as
+        #     --- Logging error --- TypeError: not all arguments converted
+        #     during string formatting
+        # so duplicates were correctly DETECTED and then never actually
+        # REPORTED. The placeholder below is what makes the count visible.
+        logger.warning("Duplicate rows found in dataset: %d", duplicate_count)
 
     logger.info("Data Validation is Finished %s", summary)
     return summary
