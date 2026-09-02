@@ -9,6 +9,4 @@ __pycache__/
 catboost_info/
 notebooks/catboost_info/
 
-saved_models/
-metrics/
-data/*.csv
+
