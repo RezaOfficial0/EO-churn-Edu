@@ -43,6 +43,23 @@ _raw_fields = {f: (str, ...) if f in CAT_COLS else (float, ...) for f in FEATURE
 RawCustomerIn = create_model("RawCustomerIn", **_raw_fields)
 
 
+def _row_to_native(row: pd.Series) -> dict:
+    """Bir satiri JSON'a cevrilebilir sozluge donusturur.
+
+    pandas/numpy skalerleri (int64, float64, NA) dogrudan serilestirilemedigi
+    icin Python tiplerine indiriyoruz; eksik degerler None oluyor.
+    """
+    out = {}
+    for key, value in row.items():
+        if pd.isna(value):
+            out[key] = None
+        elif hasattr(value, "item"):
+            out[key] = value.item()
+        else:
+            out[key] = value
+    return out
+
+
 def _score_row(row_df: pd.DataFrame, top_n: int):
     row_df = row_df[FEATURES].copy()
     for c in CAT_COLS:
@@ -93,6 +110,7 @@ def predict_by_student_id(student_id: str):
     return {
         **customer_info.iloc[0].to_dict(),
         "churn_probability": proba,
+        "features": _row_to_native(x_row.iloc[0]),
         "top_reasons": [
             {"feature": r["feature"], "impact": r["impact"]} for r in reasons
         ],
