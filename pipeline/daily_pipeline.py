@@ -10,7 +10,7 @@ from src.explainer.shap_explainer import create_explainer, explain_customers
 def run_daily_pipeline(daily_data_path, model_path, threshold=0.5, top_n=SHAP_TOP_N_FEATURES):
     model = load_model(model_path)
     data = data_loader(daily_data_path)
-    validate(data, STUDENT_INFO + FEATURES)  # gunluk veri icin kolon/null kontrolu, churn kolonu yok
+    validate(data, STUDENT_INFO + FEATURES)
 
     customer_info, X = daily_process(data, STUDENT_INFO)
     result = predict(model, X, customer_info, threshold=threshold)
@@ -21,7 +21,7 @@ def run_daily_pipeline(daily_data_path, model_path, threshold=0.5, top_n=SHAP_TO
         ", ".join(f"{r['feature']} ({r['impact']:+.2f})" for r in explanations[i])
         for i in result.index
     ]
-    # api icin yapisal versiyon da tutuyoruz - notebook/CSV string'i kullanir, frontend bunu kullanir
+
     result["top_reasons_detail"] = [explanations[i] for i in result.index]
 
     return result.reset_index(drop=True)

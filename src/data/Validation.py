@@ -16,9 +16,7 @@ class DataValidationError(Exception):
 
 
 def validate(df, required_columns: list[str], max_null_ratio: float = 0.05) -> dict:
-    """ Validates that the DataFrame contains the expected columns and that the null/duplicate rates
-     are within acceptable limits. Raises DataValidationError if any issues are detected.
-     If validation passes, returns a summary for logging and observability purposes. """
+
     missing_columns = [c for c in required_columns if c not in df.columns]
 
     if missing_columns:

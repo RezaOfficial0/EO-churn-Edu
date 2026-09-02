@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="EOAI Churn Early Warning API", version="1.0")
 
-# MVP: herkese acik. frontend ile calisan ilk musteriye giderken origin'i kisitla.
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,12 +34,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# model + explainer bir kere yuklenir, her request'te degil
+
 model = load_model(MODEL_PATH)
 explainer = create_explainer(model)
 
-# FEATURES + CAT_COLS'tan otomatik pydantic modeli uretiliyor
-# config.py degisirse burasi da otomatik guncellenir, elle sema yazmaya gerek yok
+
 _raw_fields = {f: (str, ...) if f in CAT_COLS else (float, ...) for f in FEATURES}
 RawCustomerIn = create_model("RawCustomerIn", **_raw_fields)
 

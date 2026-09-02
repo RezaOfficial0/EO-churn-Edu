@@ -7,6 +7,7 @@ adresinde interaktif Swagger UI de var (her endpoint'i orada da deneyebilirsiniz
 
 ```
 pip install -r requirements.txt
+python running_train_pipeline.py #eger saved_models ici bos ise.
 uvicorn api.main:app --reload
 ```
 Base URL: `http://127.0.0.1:8000`
