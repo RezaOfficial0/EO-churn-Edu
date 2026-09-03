@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main, side]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Compile-check every module
+        run: python -m compileall -q config.py running_train_pipeline.py api pipeline src scripts
+
+      - name: Run tests
+        run: pytest
