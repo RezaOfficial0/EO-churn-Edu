@@ -1,27 +1,30 @@
 import shap
 
+
 def create_explainer(model):
     return shap.TreeExplainer(model)
 
 
 def explain_customers(explainer, customer_data, top_n):
-    shap_values = explainer.shap_values(customer_data)
+    """Return, for each row, the `top_n` features with the largest SHAP impact.
 
-    if isinstance(shap_values, list):
+    Each item is a list of {"feature": name, "impact": signed_value}, sorted by
+    absolute impact. Positive impact pushes churn risk up, negative pushes it down.
+    """
+    if len(customer_data) == 0:
+        return []
+
+    shap_values = explainer.shap_values(customer_data)
+    if isinstance(shap_values, list):  # older SHAP returns [class0, class1]
         shap_values = shap_values[1]
 
     feature_names = list(customer_data.columns)
     explanations = []
-
-    for i in range(len(customer_data)):
-        customer_shap = shap_values[i]
-
-        feature_impacts = [
+    for row_index in range(len(customer_data)):
+        impacts = [
             {"feature": feature, "impact": float(value)}
-            for feature, value in zip(feature_names, customer_shap)
+            for feature, value in zip(feature_names, shap_values[row_index])
         ]
-
-        feature_impacts.sort(key=lambda x: abs(x["impact"]), reverse=True)
-        explanations.append(feature_impacts[:top_n])
-
+        impacts.sort(key=lambda item: abs(item["impact"]), reverse=True)
+        explanations.append(impacts[:top_n])
     return explanations

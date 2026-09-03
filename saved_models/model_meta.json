@@ -1,0 +1,183 @@
+{
+  "trained_at": "2026-09-03T09:02:30Z",
+  "is_synthetic_data": true,
+  "data_file": "/Users/rizatalebi/PycharmProjects/EO-Churn-Edu/data/mentorluk_churn_veriseti.csv",
+  "data_rows": 3384,
+  "data_sha256": "f0c092fbdd4b9c1267e27a3c1eeacd1d86a5e70b81bda9f22f556865517cfccd",
+  "features": [
+    "grade",
+    "track",
+    "city_tier",
+    "parent_involvement",
+    "plan_type",
+    "monthly_fee_try",
+    "tenure_months",
+    "program_adherence_rate",
+    "weekly_study_hours_planned",
+    "weekly_study_hours_actual",
+    "mentor_contact_freq_per_month",
+    "days_since_last_contact",
+    "message_response_time_hours",
+    "late_response_count_30d",
+    "trial_exam_count_total",
+    "trial_exam_avg_net",
+    "trial_exam_score_trend",
+    "missed_trial_exam_count",
+    "payment_delay_days_avg",
+    "support_ticket_count_90d",
+    "satisfaction_survey_score",
+    "days_to_next_exam",
+    "weekly_study_hours_actual_missing",
+    "satisfaction_missing"
+  ],
+  "cat_cols": [
+    "grade",
+    "track",
+    "city_tier",
+    "parent_involvement",
+    "plan_type"
+  ],
+  "model_params": {
+    "iterations": 300,
+    "depth": 4,
+    "learning_rate": 0.05
+  },
+  "catboost_tree_count": 150,
+  "decision_cost": {
+    "false_alarm": 1,
+    "missed_churn": 3
+  },
+  "chosen_threshold": 0.2,
+  "threshold_selection": {
+    "threshold": 0.2,
+    "expected_cost": 330,
+    "false_alarms": 162,
+    "missed_churns": 56
+  },
+  "imputation_values": {
+    "weekly_study_hours_actual": {
+      "3 Aylık": 9.0,
+      "Aylık": 9.0,
+      "Yıllık": 9.2,
+      "_global": 9.0
+    },
+    "satisfaction_survey_score": {
+      "3 Aylık": 3.5,
+      "Aylık": 3.6,
+      "Yıllık": 3.6,
+      "_global": 3.6
+    }
+  },
+  "calibrator_path": "/Users/rizatalebi/PycharmProjects/EO-Churn-Edu/saved_models/calibrator.joblib",
+  "metrics": {
+    "threshold": 0.2,
+    "roc_auc": 0.7133014375165359,
+    "average_precision": 0.48585781399799505,
+    "precision": 0.4188679245283019,
+    "recall": 0.6032608695652174,
+    "f1": 0.49443207126948774,
+    "precision_at_20": 0.65,
+    "lift_at_20": 2.3915760869565217,
+    "confusion_matrix": [
+      [
+        339,
+        154
+      ],
+      [
+        73,
+        111
+      ]
+    ],
+    "brier_score": 0.17321221461780506,
+    "brier_score_uncalibrated": 0.201454952306439
+  },
+  "cv_auc_mean": 0.742294774154084,
+  "cv_auc_std": 0.02167276679122889,
+  "baseline_metrics": {
+    "logistic_regression": {
+      "roc_auc": 0.7341255842666901,
+      "average_precision": 0.5388350699748921
+    },
+    "single_rule": {
+      "column": "days_since_last_contact",
+      "roc_auc": 0.6867944704118528,
+      "average_precision": 0.48644851305516407
+    }
+  },
+  "error_analysis_false_negatives": {
+    "grade": {
+      "11. Sınıf": {
+        "churners": 46,
+        "missed": 20
+      },
+      "12. Sınıf": {
+        "churners": 85,
+        "missed": 32
+      },
+      "Mezun": {
+        "churners": 53,
+        "missed": 21
+      }
+    },
+    "track": {
+      "Dil": {
+        "churners": 7,
+        "missed": 2
+      },
+      "Eşit Ağırlık": {
+        "churners": 58,
+        "missed": 22
+      },
+      "Sayısal": {
+        "churners": 89,
+        "missed": 38
+      },
+      "Sözel": {
+        "churners": 30,
+        "missed": 11
+      }
+    },
+    "city_tier": {
+      "Tier 1 (Büyükşehir)": {
+        "churners": 111,
+        "missed": 43
+      },
+      "Tier 2": {
+        "churners": 49,
+        "missed": 21
+      },
+      "Tier 3": {
+        "churners": 24,
+        "missed": 9
+      }
+    },
+    "parent_involvement": {
+      "Düşük": {
+        "churners": 40,
+        "missed": 11
+      },
+      "Orta": {
+        "churners": 86,
+        "missed": 37
+      },
+      "Yüksek": {
+        "churners": 58,
+        "missed": 25
+      }
+    },
+    "plan_type": {
+      "3 Aylık": {
+        "churners": 68,
+        "missed": 30
+      },
+      "Aylık": {
+        "churners": 80,
+        "missed": 31
+      },
+      "Yıllık": {
+        "churners": 36,
+        "missed": 12
+      }
+    }
+  }
+}

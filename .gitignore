@@ -15,8 +15,10 @@ __pycache__/
 catboost_info/
 notebooks/catboost_info/
 
-# Daily-run output (regenerated every run, not source)
+# Regenerated every run, not source. The tracked source of truth for "what
+# the current model scores" is saved_models/model_meta.json.
 data/daily_alerts.csv
+metrics/train_metrics_*.json
 
 # NOTE: data/*.csv and saved_models/ ARE committed on purpose so the project
 # runs immediately after `git clone` (see README "Quickstart").
