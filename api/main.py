@@ -36,6 +36,7 @@ from src.explainer.shap_explainer import create_explainer, explain_customers
 from src.logging_setup import configure_logging
 from src.model.calibrate import churn_proba, load_calibrator
 from src.model.load import load_meta, load_model
+from src.serialization import to_native
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +191,7 @@ def predict_by_student_id(student_id: str, request: Request):
     return {
         **customer_info.iloc[0].to_dict(),
         "churn_probability": proba,
+        "features": to_native(X.iloc[0].to_dict()),
         "top_reasons": reasons,
     }
 

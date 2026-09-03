@@ -30,6 +30,7 @@ from src.logging_setup import configure_logging
 from src.model.calibrate import load_calibrator
 from src.model.load import load_meta, load_model
 from src.predictions.predict import predict
+from src.serialization import to_native
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,8 @@ def run_daily_pipeline(
     at_risk = predict(model, X, customer_info, threshold=threshold, calibrator=calibrator)
 
     # Explain only the risky rows - SHAP over every row would be the bottleneck at scale.
-    explanations = explain_customers(explainer, X.loc[at_risk.index], top_n=top_n)
+    risky_X = X.loc[at_risk.index]
+    explanations = explain_customers(explainer, risky_X, top_n=top_n)
 
     at_risk = at_risk.reset_index(drop=True)
     at_risk["top_reasons"] = [
@@ -71,6 +73,9 @@ def run_daily_pipeline(
         for reasons in explanations
     ]
     at_risk["top_reasons_detail"] = explanations
+    # The feature values the model actually scored (flags computed, nulls imputed),
+    # so the dashboard can show them next to the SHAP reasons.
+    at_risk["features"] = [to_native(row.to_dict()) for _, row in risky_X.iterrows()]
 
     at_risk = _mark_new_or_repeat(at_risk, alerts_path)
     _append_to_alert_log(at_risk, alerts_path)

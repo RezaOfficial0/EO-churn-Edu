@@ -86,11 +86,20 @@ plus the passthrough id columns.
   "student_id": "STU300001",
   "enrollment_date": "2025-04-10",
   "churn_probability": 0.4851,
+  "features": {
+    "grade": "12. Sınıf",
+    "days_since_last_contact": 41.0,
+    "satisfaction_survey_score": 3.6,
+    "satisfaction_missing": 1,
+    "...": "... every column in config.FEATURES"
+  },
   "top_reasons": [ ... ]
 }
 ```
 
-`404` if the id is not in the daily data.
+`features` is the model's input for this student **after** feature engineering:
+the `_missing` flags are computed and any null is imputed, so the values line up
+with `top_reasons`. `404` if the id is not in the daily data.
 
 ## POST /run-daily-pipeline?threshold=0.5
 
@@ -107,6 +116,7 @@ chosen during training (stored in `model_meta.json`).
       "enrollment_date": "2025-02-01",
       "churn_probability": 0.71,
       "status": "new",
+      "features": {"grade": "12. Sınıf", "days_since_last_contact": 59.0, "...": "..."},
       "top_reasons": "days_since_last_contact (+0.59), mentor_contact_freq_per_month (+0.28)",
       "top_reasons_detail": [
         {"feature": "days_since_last_contact", "impact": 0.59},
@@ -121,6 +131,8 @@ chosen during training (stored in `model_meta.json`).
   previous run).
 - `top_reasons` is a ready-to-display string; `top_reasons_detail` is the structured
   list — use whichever suits your UI.
+- `features` is the same post-feature-engineering input dict as in
+  `GET /predict/{student_id}`, for a student-detail view.
 
 Each run also appends its results to `data/daily_alerts.csv`.
 
