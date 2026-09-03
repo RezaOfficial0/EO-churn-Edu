@@ -5,13 +5,23 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
-from config import DAILY_DATA_PATH, FEATURE_BOUNDS, FEATURES, CAT_COLS
+from config import API_KEY, DAILY_DATA_PATH, FEATURE_BOUNDS, FEATURES, CAT_COLS
 
 
 @pytest.fixture(scope="module")
 def client():
-    with TestClient(app, raise_server_exceptions=False) as c:
+    # If the developer's .env sets an API key, send it on every request so the
+    # suite passes whether or not auth is enabled.
+    headers = {"X-API-Key": API_KEY} if API_KEY else {}
+    with TestClient(app, headers=headers, raise_server_exceptions=False) as c:
         yield c
+
+
+@pytest.mark.skipif(not API_KEY, reason="auth disabled (no API_KEY set)")
+def test_missing_api_key_is_rejected():
+    with TestClient(app, raise_server_exceptions=False) as anonymous:
+        assert anonymous.get("/health").status_code == 200
+        assert anonymous.get("/metrics").status_code == 401
 
 
 def _valid_predict_body() -> dict:
@@ -55,7 +65,9 @@ def test_predict_rejects_missing_field(client):
 
 def test_predict_by_student_id_and_404(client):
     known_id = str(pd.read_csv(DAILY_DATA_PATH).iloc[0]["student_id"])
-    assert client.get(f"/predict/{known_id}").status_code == 200
+    response = client.get(f"/predict/{known_id}")
+    assert response.status_code == 200
+    assert set(FEATURES) <= response.json()["features"].keys()
     assert client.get("/predict/not-a-real-id").status_code == 404
 
 
@@ -63,7 +75,9 @@ def test_run_daily_pipeline(client):
     body = client.post("/run-daily-pipeline").json()
     assert "churn_risk_count" in body
     if body["students"]:
-        assert {"status", "churn_probability", "top_reasons"} <= body["students"][0].keys()
+        first = body["students"][0]
+        assert {"status", "churn_probability", "top_reasons", "features"} <= first.keys()
+        assert set(FEATURES) <= first["features"].keys()
 
 
 def test_metrics_reports_synthetic_flag(client):
