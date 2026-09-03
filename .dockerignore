@@ -1,0 +1,11 @@
+.git
+.venv
+.idea
+.vscode
+__pycache__
+*.pyc
+.DS_Store
+catboost_info
+tests
+.github
+data/daily_alerts.csv

@@ -1,12 +1,22 @@
-.venv/
+# Python
 __pycache__/
 *.pyc
+.venv/
+
+# Editors / OS
 .idea/
+.vscode/
 .DS_Store
 
+# Local secrets
 .env
 
+# CatBoost training scratch output
 catboost_info/
 notebooks/catboost_info/
 
+# Daily-run output (regenerated every run, not source)
+data/daily_alerts.csv
 
+# NOTE: data/*.csv and saved_models/ ARE committed on purpose so the project
+# runs immediately after `git clone` (see README "Quickstart").
