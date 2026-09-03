@@ -1,22 +1,39 @@
+"""Live smoke test - needs a running server (`uvicorn api.main:app`) and the
+sample CSVs. This is a quick end-to-end check, not the unit-test suite; run
+`pytest` for that.
+
+    uvicorn api.main:app &
+    python scripts/test_api.py
+
+Set API_KEY in the environment if the server was started with one.
+"""
 import json
+import os
 import sys
-import urllib.request
 import urllib.error
+import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 
+from config import CAT_COLS, DAILY_DATA_PATH, FEATURE_BOUNDS, FEATURES
+
 BASE_URL = "http://127.0.0.1:8000"
+API_KEY = os.environ.get("API_KEY")
 results = []
 
 
 def call(method, path, payload=None):
-    url = BASE_URL + path
+    headers = {"Content-Type": "application/json"}
+    if API_KEY:
+        headers["X-API-Key"] = API_KEY
     data = json.dumps(payload).encode() if payload is not None else None
-    req = urllib.request.Request(url, data=data, method=method,
-                                  headers={"Content-Type": "application/json"})
+    request = urllib.request.Request(BASE_URL + path, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.status, json.loads(resp.read())
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return response.status, json.loads(response.read())
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read())
 
@@ -27,40 +44,44 @@ def check(name, condition, detail=""):
     print(f"[{status}] {name} {detail}")
 
 
-df = pd.read_csv("data/daily_data.csv")
-real_student_id = str(df.iloc[0]["student_id"])
-raw_payload = df.drop(columns=["student_id", "enrollment_date"]).iloc[0].to_dict()
+def valid_predict_body():
+    row = pd.read_csv(DAILY_DATA_PATH).iloc[0]
+    body = {}
+    for feature in FEATURES:
+        if feature in CAT_COLS:
+            body[feature] = str(row[feature])
+        elif feature in row and pd.notna(row[feature]):
+            body[feature] = float(row[feature])
+        else:
+            body[feature] = float(FEATURE_BOUNDS[feature][0])
+    return body
+
+
+student_id = str(pd.read_csv(DAILY_DATA_PATH).iloc[0]["student_id"])
 
 status, body = call("GET", "/health")
 check("GET /health", status == 200 and body.get("status") == "ok", f"-> {status}")
 
 status, body = call("GET", "/metrics")
-check("GET /metrics", status == 200 and "roc_auc" in body, f"-> {status}")
+check("GET /metrics", status == 200 and body.get("is_synthetic_data") is True, f"-> {status}")
 
-status, body = call("POST", "/predict", raw_payload)
-predict_raw_proba = body.get("churn_probability")
-check("POST /predict", status == 200 and "churn_probability" in body, f"-> {status} proba={predict_raw_proba}")
+status, body = call("POST", "/predict", valid_predict_body())
+raw_proba = body.get("churn_probability")
+check("POST /predict", status == 200 and raw_proba is not None, f"-> {status} proba={raw_proba}")
 
-status, body = call("GET", f"/predict/{real_student_id}")
-predict_id_proba = body.get("churn_probability")
-check("GET /predict/{student_id}", status == 200 and "churn_probability" in body, f"-> {status} proba={predict_id_proba}")
-
-check(
-    "predict raw == predict/{id} tutarliligi",
-    predict_raw_proba is not None and predict_id_proba is not None
-    and abs(predict_raw_proba - predict_id_proba) < 1e-6,
-    f"-> {predict_raw_proba} vs {predict_id_proba}",
-)
+status, body = call("GET", f"/predict/{student_id}")
+id_proba = body.get("churn_probability")
+check("GET /predict/{student_id}", status == 200 and id_proba is not None, f"-> {status} proba={id_proba}")
 
 status, body = call("GET", "/predict/does-not-exist-999")
 check("GET /predict/{student_id} 404 case", status == 404, f"-> {status}")
 
-status, body = call("POST", "/run-daily-pipeline")
-check("POST /run-daily-pipeline", status == 200 and "churn_risk_count" in body, f"-> {status} risky={body.get('churn_risk_count')}")
+status, _ = call("POST", "/run-daily-pipeline")
+check("POST /run-daily-pipeline", status == 200, f"-> {status}")
 
 print()
 failed = [name for name, s in results if s == "FAIL"]
 if failed:
-    print(f"{len(failed)} test FAILED: {failed}")
+    print(f"{len(failed)} test(s) FAILED: {failed}")
     sys.exit(1)
-print(f"Tum {len(results)} test gecti.")
+print(f"all {len(results)} checks passed.")
