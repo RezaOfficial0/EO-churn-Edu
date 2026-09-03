@@ -5,6 +5,8 @@ probability - 0.5 is an artefact of the class weighting. `fit_calibrator` learns
 monotonic mapping from raw probability to observed churn rate on the validation set,
 so the number the API returns as `churn_probability` means what it says.
 """
+import os
+
 import joblib
 import numpy as np
 from sklearn.isotonic import IsotonicRegression
@@ -29,6 +31,7 @@ def churn_proba(model, X, calibrator=None):
 
 
 def save_calibrator(calibrator, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     joblib.dump(calibrator, path)
 
 
