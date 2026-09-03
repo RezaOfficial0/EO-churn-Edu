@@ -17,11 +17,16 @@ def run_daily_pipeline(daily_data_path, model_path, threshold=0.5, top_n=SHAP_TO
 
     explainer = create_explainer(model)
     explanations = explain_customers(explainer, X, top_n=top_n)
+
+    # C1 Convert DataFrame labels to positional indices
+    positions = X.index.get_indexer(result.index)
+    if (positions < 0).any():
+        raise ValueError("Could not map prediction results to SHAP explanations.")
     result["top_reasons"] = [
-        ", ".join(f"{r['feature']} ({r['impact']:+.2f})" for r in explanations[i])
-        for i in result.index
+        ", ".join(
+            f"{r['feature']} ({r['impact']:+.2f})"
+            for r in explanations[pos])
+        for pos in positions
     ]
-
-    result["top_reasons_detail"] = [explanations[i] for i in result.index]
-
+    result["top_reasons_detail"] = [explanations[pos] for pos in positions]
     return result.reset_index(drop=True)
