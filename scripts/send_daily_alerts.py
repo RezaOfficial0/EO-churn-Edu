@@ -30,9 +30,8 @@ def latest_new_alerts() -> pd.DataFrame:
     log = pd.read_csv(path)
     if log.empty:
         return log
-    last_run = log["run_date"].max()
-    today = log[log["run_date"] == last_run]
-    return today[today["status"] == "new"]
+    last_run = log[log["run_at"] == log["run_at"].max()]
+    return last_run[last_run["status"] == "new"]
 
 
 def format_alerts(alerts: pd.DataFrame) -> str:

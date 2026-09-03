@@ -110,9 +110,9 @@ Environment variables (optional, loaded from `.env` — see `.env.example`):
 ## Daily alerts
 
 `POST /run-daily-pipeline` scores `daily_data.csv`, keeps students at or above the
-chosen threshold, and **appends** them to `data/daily_alerts.csv` with a `run_date`
-and a `status` of `new` or `still_at_risk` (so the same student is not reported as
-new every day).
+chosen threshold, and **appends** them to `data/daily_alerts.csv` with a `run_at`
+timestamp and a `status` of `new` or `still_at_risk` (so the same student is not
+reported as new every run).
 
 To actually notify someone, run on a schedule, e.g. a cron entry:
 

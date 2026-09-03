@@ -6,7 +6,7 @@ and calibrator it already holds in memory. It also runs standalone:
     python -m pipeline.daily_pipeline
 """
 import logging
-from datetime import date
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -78,15 +78,19 @@ def run_daily_pipeline(
 
 
 def _previous_at_risk_ids(alerts_path) -> set[str]:
-    """Student ids flagged in the most recent run recorded in the alert log."""
+    """Student ids flagged in the most recent run recorded in the alert log.
+
+    Runs are identified by `run_at` (a full timestamp), so two runs on the same
+    day are told apart.
+    """
     path = Path(alerts_path)
     if not path.exists():
         return set()
     log = pd.read_csv(path)
     if log.empty:
         return set()
-    last_run = log["run_date"].max()
-    return set(log.loc[log["run_date"] == last_run, _ID_COLUMN].astype(str))
+    last_run = log["run_at"].max()
+    return set(log.loc[log["run_at"] == last_run, _ID_COLUMN].astype(str))
 
 
 def _mark_new_or_repeat(at_risk: pd.DataFrame, alerts_path) -> pd.DataFrame:
@@ -102,9 +106,11 @@ def _mark_new_or_repeat(at_risk: pd.DataFrame, alerts_path) -> pd.DataFrame:
 
 def _append_to_alert_log(at_risk: pd.DataFrame, alerts_path) -> None:
     """Append this run's at-risk students to data/daily_alerts.csv."""
+    now = datetime.now(timezone.utc)
     columns = [_ID_COLUMN, "churn_probability", "status", "top_reasons"]
     rows = at_risk[columns].copy()
-    rows.insert(0, "run_date", date.today().isoformat())
+    rows.insert(0, "run_at", now.strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
+    rows.insert(1, "run_date", now.date().isoformat())
 
     path = Path(alerts_path)
     rows.to_csv(path, mode="a", header=not path.exists(), index=False)
