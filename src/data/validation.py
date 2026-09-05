@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class DataValidationError(Exception):
     """The data does not meet the minimum quality bar for the pipeline to continue."""
 
-
+## analyizez DataFrame and return ...
 def validate(
     df: pd.DataFrame,
     required_columns: list[str],
