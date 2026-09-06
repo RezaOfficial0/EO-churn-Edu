@@ -135,6 +135,7 @@ FEATURE_BOUNDS = {
 # --- Environment-driven settings (see .env.example) ----------------
 # Shared secret for the X-API-Key header. None => authentication disabled.
 API_KEY = os.environ.get("API_KEY") or None
+DATABASE_URL = os.getenv("DATABASE_URL") or None
 
 # Browser origins allowed to call the API (CORS).
 ALLOWED_ORIGINS = [
