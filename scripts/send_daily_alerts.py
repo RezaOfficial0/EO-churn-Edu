@@ -17,20 +17,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 
-from config import ALERT_WEBHOOK_URL, DAILY_ALERTS_PATH, STUDENT_INFO
+from config import ALERT_WEBHOOK_URL, STUDENT_INFO
+from src.data.loader import latest_run_alerts
 
 _ID_COLUMN = STUDENT_INFO[0]
 
 
 def latest_new_alerts() -> pd.DataFrame:
-    """The `status == "new"` rows from the most recent run in the alert log."""
-    path = Path(DAILY_ALERTS_PATH)
-    if not path.exists():
-        return pd.DataFrame()
-    log = pd.read_csv(path)
-    if log.empty:
-        return log
-    last_run = log[log["run_at"] == log["run_at"].max()]
+    """The `status == "new"` rows from the most recent run in the alert log.
+
+    Reads the CSV or the `alerts` table, whichever `config.DATA_SOURCE` selects.
+    """
+    last_run = latest_run_alerts()
+    if last_run.empty:
+        return last_run
     return last_run[last_run["status"] == "new"]
 
 

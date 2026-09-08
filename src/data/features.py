@@ -22,6 +22,8 @@ learned at training time are reused, and travel with the model in model_meta.jso
 """
 import pandas as pd
 
+from config import FEATURES
+
 # Rows missing any of these are dropped from the training data - there is no
 # sensible value to impute for them.
 UNIMPUTABLE_REQUIRED = [
@@ -37,6 +39,11 @@ MISSING_FLAG_COLUMNS = {
 
 # Missing values are filled with the median within the row's group of this column.
 IMPUTE_GROUP_COLUMN = "plan_type"
+
+# The columns a RAW record (a CSV row, a daily_students row) must provide: every
+# model feature except the missing-flags, which this module computes. Defined here
+# because it follows from the recipe below - importers should not re-derive it.
+RAW_FEATURE_COLUMNS = [c for c in FEATURES if c not in MISSING_FLAG_COLUMNS.values()]
 
 
 def drop_unimputable_rows(df: pd.DataFrame) -> pd.DataFrame:

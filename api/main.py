@@ -27,9 +27,9 @@ from config import (
     SHAP_TOP_N_FEATURES,
     STUDENT_INFO,
 )
-from pipeline.daily_pipeline import run_daily_pipeline
+from pipeline.daily_pipeline import run_daily_pipeline, score_students
 from src.data.features import build_serving_frame
-from src.data.loader import data_loader
+from src.data.loader import load_daily_students
 from src.data.preprocess import cast_categoricals, daily_process
 from src.data.validation import DataValidationError, require_no_nulls
 from src.explainer.shap_explainer import create_explainer, explain_customers
@@ -169,8 +169,8 @@ def predict_raw(payload: RawCustomerIn, request: Request):
 @app.get("/predict/{student_id}", dependencies=[Depends(require_api_key)])
 def predict_by_student_id(student_id: str, request: Request):
     try:
-        daily = data_loader(DAILY_DATA_PATH)
-    except FileNotFoundError as e:
+        daily = load_daily_students(DAILY_DATA_PATH)
+    except (FileNotFoundError, RuntimeError) as e:
         raise HTTPException(status_code=503, detail=str(e))
 
     match = daily[daily[_ID_COLUMN].astype(str) == str(student_id)]
@@ -196,11 +196,50 @@ def predict_by_student_id(student_id: str, request: Request):
     }
 
 
+def _resolve_threshold(request: Request, threshold: float | None) -> float:
+    """Explicit `?threshold=` wins; otherwise use the value chosen during training."""
+    if threshold is not None:
+        return threshold
+    return request.app.state.meta.get("chosen_threshold", 0.5)
+
+
+@app.get("/students", dependencies=[Depends(require_api_key)])
+def list_scored_students(request: Request, threshold: float | None = None):
+    """Read-only scoring. Same work as POST /run-daily-pipeline, no side effects.
+
+    Nothing is written to the alert log, so `status` (new / still_at_risk) is not
+    part of the response - that classification only means something relative to a
+    recorded run. Use `?threshold=0` to get every student scored.
+    """
+    get_model(request)
+    meta = request.app.state.meta
+    chosen_threshold = _resolve_threshold(request, threshold)
+    try:
+        result = score_students(
+            DAILY_DATA_PATH,
+            model=request.app.state.model,
+            explainer=request.app.state.explainer,
+            calibrator=request.app.state.calibrator,
+            imputation_values=meta.get("imputation_values", {}),
+            threshold=chosen_threshold,
+        )
+    except (FileNotFoundError, DataValidationError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:  # data source misconfigured (e.g. DATA_SOURCE=db, no URL)
+        raise HTTPException(status_code=503, detail=str(e))
+
+    return {
+        "count": len(result),
+        "threshold": chosen_threshold,
+        "students": result.to_dict(orient="records"),
+    }
+
+
 @app.post("/run-daily-pipeline", dependencies=[Depends(require_api_key)])
 def trigger_daily_pipeline(request: Request, threshold: float | None = None):
     get_model(request)
     meta = request.app.state.meta
-    chosen_threshold = threshold if threshold is not None else meta.get("chosen_threshold", 0.5)
+    chosen_threshold = _resolve_threshold(request, threshold)
     try:
         result = run_daily_pipeline(
             DAILY_DATA_PATH,
@@ -212,6 +251,8 @@ def trigger_daily_pipeline(request: Request, threshold: float | None = None):
         )
     except (FileNotFoundError, DataValidationError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:  # data source misconfigured (e.g. DATA_SOURCE=db, no URL)
+        raise HTTPException(status_code=503, detail=str(e))
 
     return {
         "churn_risk_count": len(result),
