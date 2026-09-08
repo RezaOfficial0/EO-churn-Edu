@@ -25,6 +25,16 @@ development only) and the server logs a warning at startup.
 Allowed browser origins come from the `ALLOWED_ORIGINS` environment variable
 (comma-separated). The default is `http://localhost:5173, http://127.0.0.1:5173`.
 
+## Data source
+
+The daily endpoints read students and write alerts through one switch, the
+`DATA_SOURCE` environment variable: `csv` (default — `data/daily_data.csv` and
+`data/daily_alerts.csv`) or `db` (the `daily_students` and `alerts` tables in
+`DATABASE_URL`; schema in `db/schema.sql`, loaded by
+`scripts/load_daily_students.py`). **Nothing in this contract changes between the two** — same
+endpoints, same request and response shapes. If the frontend sees different data,
+the server is pointed at a different backend, not at a different API.
+
 ## Error format
 
 Every `4xx` / `5xx` response has this body:
@@ -134,7 +144,48 @@ chosen during training (stored in `model_meta.json`).
 - `features` is the same post-feature-engineering input dict as in
   `GET /predict/{student_id}`, for a student-detail view.
 
-Each run also appends its results to `data/daily_alerts.csv`.
+**This endpoint writes.** Each call records a new run in the alert log
+(`data/daily_alerts.csv`, or the `alerts` table when `DATA_SOURCE=db`) and that run
+becomes the baseline the next run's `new` / `still_at_risk` is measured against.
+Calling it to populate a dashboard view therefore corrupts `status` — use
+`GET /students` for that.
+
+## GET /students?threshold=0.5
+
+**Read-only.** Scores today's students and returns the ones at or above
+`threshold`. Writes nothing — no alert-log row, no `status` change — so the
+dashboard can call it on every page load and every refresh.
+
+`threshold` is optional; the default is the value chosen during training. Pass
+`?threshold=0` to get every student scored, sorted most-risky first.
+
+```json
+{
+  "count": 9,
+  "threshold": 0.53,
+  "students": [
+    {
+      "student_id": "STU300010",
+      "enrollment_date": "2025-02-01",
+      "churn_probability": 0.71,
+      "features": {"grade": "12. Sınıf", "days_since_last_contact": 59.0, "...": "..."},
+      "top_reasons": "days_since_last_contact (+0.59), mentor_contact_freq_per_month (+0.28)",
+      "top_reasons_detail": [
+        {"feature": "days_since_last_contact", "impact": 0.59},
+        {"feature": "mentor_contact_freq_per_month", "impact": 0.28}
+      ]
+    }
+  ]
+}
+```
+
+Each student object is the same shape as in `POST /run-daily-pipeline`, **minus
+`status`**. `new` / `still_at_risk` is defined relative to the previous *recorded*
+run, and this endpoint records nothing, so it has no meaningful value here. If you
+need `status`, read it from the last `POST /run-daily-pipeline` response.
+
+Use this endpoint for displaying students. Use `POST /run-daily-pipeline` only to
+actually perform the day's run.
 
 ## GET /metrics
 
@@ -159,7 +210,7 @@ Returns the metrics of the **currently loaded** model, read from
 
 ## Known limitations (relevant to the frontend)
 
-- `GET /predict/{student_id}` re-reads `daily_data.csv` on every call — fine for the
-  MVP, slow at large scale.
+- `GET /predict/{student_id}` and `GET /students` re-read the whole daily dataset on
+  every call — fine for the MVP, slow at large scale.
 - The API is not deployed anywhere yet. Testing from another machine needs a hosting
   decision first.

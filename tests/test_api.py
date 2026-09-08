@@ -84,3 +84,42 @@ def test_metrics_reports_synthetic_flag(client):
     body = client.get("/metrics").json()
     assert body["is_synthetic_data"] is True
     assert "chosen_threshold" in body
+
+
+# --- GET /students (read-only scoring) --------------------------------------
+def _alert_log_fingerprint():
+    from config import DAILY_ALERTS_PATH
+    from pathlib import Path as _Path
+
+    path = _Path(DAILY_ALERTS_PATH)
+    return path.stat().st_size if path.exists() else None
+
+
+def test_students_is_read_only(client):
+    """The dashboard hits this on every page load; it must not touch the alert log."""
+    before = _alert_log_fingerprint()
+    response = client.get("/students", params={"threshold": 0})
+    assert response.status_code == 200
+    assert _alert_log_fingerprint() == before
+
+
+def test_students_response_shape(client):
+    body = client.get("/students", params={"threshold": 0}).json()
+
+    assert set(body) == {"count", "threshold", "students"}
+    assert body["threshold"] == 0
+    assert body["count"] == len(body["students"])
+    assert body["count"] == len(pd.read_csv(DAILY_DATA_PATH))  # threshold 0 keeps everyone
+
+    student = body["students"][0]
+    assert {
+        "student_id",
+        "enrollment_date",
+        "churn_probability",
+        "top_reasons",
+        "top_reasons_detail",
+        "features",
+    } <= set(student)
+    assert "status" not in student  # status only means something for a recorded run
+    probabilities = [s["churn_probability"] for s in body["students"]]
+    assert probabilities == sorted(probabilities, reverse=True)
