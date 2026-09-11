@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 _FAILURES: list[str] = []
 _STEP = 0
-_TOTAL = 7
+_TOTAL = 8
 
 
 def step(title: str) -> None:
@@ -241,7 +241,30 @@ def main() -> int:
         counts = recorded["status"].value_counts().to_dict() if len(recorded) else {}
         ok(f"status: {counts or 'no at-risk students this run'}")
 
-    # --- 7. API --------------------------------------------------------------
+    # --- 7. Notifications ----------------------------------------------------
+    step("Notifications")
+    from config import NOTIFY_CHANNELS
+    from src.notifications.message import build_message
+    from src.notifications.notify import send_notifications
+
+    try:
+        # Never sends: dry_run short-circuits before any channel is touched.
+        subject, body = build_message(scored.head(0), still_at_risk=scored, students=students)
+        ok(f"message builds ({len(body)} chars): {subject}")
+        results = send_notifications(
+            scored.head(0), still_at_risk=scored, students=students, dry_run=True
+        )
+    except Exception as e:  # noqa: BLE001
+        fail(f"could not build the alert message: {e}")
+        results = {}
+
+    if NOTIFY_CHANNELS:
+        ok(f"channels configured: {', '.join(NOTIFY_CHANNELS)}")
+        info("this check never sends - use: python scripts/send_daily_alerts.py --dry-run")
+    else:
+        skip("NOTIFY_CHANNELS is empty - the daily alert is printed only")
+
+    # --- 8. API --------------------------------------------------------------
     step("API")
     try:
         from fastapi.testclient import TestClient
