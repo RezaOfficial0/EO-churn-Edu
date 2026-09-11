@@ -132,6 +132,45 @@ FEATURE_BOUNDS = {
 }
 
 
+# --- Notifications ----------------------------------------------------------
+# Human-readable Turkish label for each feature, used in the daily alert message
+# a mentor actually reads. "days_since_last_contact (+0.91)" means nothing to
+# them; "Son iletisimden bu yana (gun): 41" does.
+#
+# This is per client: a new customer with different columns replaces this table
+# (and FEATURES above) - no other file changes.
+FEATURE_LABELS = {
+    "grade": "Sınıf",
+    "track": "Alan",
+    "city_tier": "Şehir kademesi",
+    "parent_involvement": "Veli ilgisi",
+    "plan_type": "Paket",
+    "monthly_fee_try": "Aylık ücret (TL)",
+    "tenure_months": "Programdaki süresi (ay)",
+    "program_adherence_rate": "Program uyum oranı",
+    "weekly_study_hours_planned": "Planlanan haftalık çalışma (saat)",
+    "weekly_study_hours_actual": "Gerçekleşen haftalık çalışma (saat)",
+    "mentor_contact_freq_per_month": "Aylık mentor görüşme sayısı",
+    "days_since_last_contact": "Son iletişimden bu yana (gün)",
+    "message_response_time_hours": "Mesaja yanıt süresi (saat)",
+    "late_response_count_30d": "Son 30 günde geç yanıt",
+    "trial_exam_count_total": "Toplam deneme sınavı",
+    "trial_exam_avg_net": "Deneme ortalama net",
+    "trial_exam_score_trend": "Deneme net eğilimi",
+    "missed_trial_exam_count": "Kaçırılan deneme sayısı",
+    "payment_delay_days_avg": "Ortalama ödeme gecikmesi (gün)",
+    "support_ticket_count_90d": "Son 90 günde destek talebi",
+    "satisfaction_survey_score": "Memnuniyet puanı (1-5)",
+    "days_to_next_exam": "Sonraki sınava kalan gün",
+    "weekly_study_hours_actual_missing": "Çalışma saati verisi eksik",
+    "satisfaction_missing": "Memnuniyet anketi doldurulmamış",
+}
+
+# Shown at the top of every alert message, so a mentor knows which programme the
+# alert is about when one inbox serves several clients.
+NOTIFY_TITLE = os.environ.get("NOTIFY_TITLE", "EO-Churn — Günlük Risk Uyarısı")
+
+
 # --- Environment-driven settings (see .env.example) ----------------
 DATA_SOURCE = os.getenv("DATA_SOURCE", "csv")  # "csv" or "db"
 API_KEY = os.environ.get("API_KEY") or None
@@ -147,5 +186,36 @@ ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 
-# Webhook that scripts/send_daily_alerts.py posts new at-risk students to.
+# --- Notification channels --------------------------------------------------
+# Which channels the daily alert goes to. Comma-separated, any of:
+#   telegram, email, webhook
+# Empty (the default) means print to stdout only - which is what you want on a
+# developer machine, so a test run never messages a real person.
+NOTIFY_CHANNELS = [
+    channel.strip().lower()
+    for channel in os.environ.get("NOTIFY_CHANNELS", "").split(",")
+    if channel.strip()
+]
+
+# Telegram: talk to @BotFather to create a bot and get the token; the chat id is
+# the conversation (or group) the bot posts into.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or None
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID") or None
+
+# Email over SMTP. SMTP_TO is comma-separated.
+SMTP_HOST = os.environ.get("SMTP_HOST") or None
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER") or None
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD") or None
+SMTP_FROM = os.environ.get("SMTP_FROM") or SMTP_USER
+SMTP_TO = [
+    address.strip()
+    for address in os.environ.get("SMTP_TO", "").split(",")
+    if address.strip()
+]
+# True for STARTTLS on port 587 (the common case); False for implicit SSL on 465.
+SMTP_STARTTLS = os.environ.get("SMTP_STARTTLS", "true").lower() not in {"false", "0", "no"}
+
+# Webhook that scripts/send_daily_alerts.py posts new at-risk students to
+# (Slack / Discord "incoming webhook" URL, or anything accepting {"text": ...}).
 ALERT_WEBHOOK_URL = os.environ.get("ALERT_WEBHOOK_URL") or None
