@@ -41,7 +41,7 @@ FEATURES = [
     "city_tier",
     "parent_involvement",
     "plan_type",
-    "monthly_fee_try",
+    "monthly_value_try",
     "tenure_months",
     "program_adherence_rate",
     "weekly_study_hours_planned",
@@ -75,12 +75,53 @@ CAT_COLS = [
 TARGET_FEATURE = "churn"
 
 
+# How many months each plan's price covers.
+#
+# `monthly_fee_try` in the raw export is the PRICE OF THE PLAN, not a monthly
+# amount: an "Aylık" row is ~1.800 TL, a "Yıllık" row ~16.730 TL. Fed to the model
+# as it stands it is three non-overlapping ranges - a perfect proxy for plan_type
+# and nothing more, so the model was given the same fact twice. Divided by the
+# months it covers it becomes what the name always promised: what a student is
+# worth per month (~1.800 / ~1.634 / ~1.394 by plan). Those ranges DO overlap, so
+# it carries information plan_type does not - and it is the number any
+# revenue-weighted prioritisation needs.
+#
+# Per client, like FEATURES: a plan name missing from this table falls back to 1
+# (the price is treated as monthly) with a warning, rather than failing the run.
+PLAN_MONTHS = {
+    "Aylık": 1,
+    "3 Aylık": 3,
+    "Yıllık": 12,
+}
+
+
 # --- Model hyperparameters --------------------------------------------------
 MODEL_PARAMS = {
     "iterations": 300,
     "depth": 4,
     "learning_rate": 0.05,
 }
+
+
+# --- Probability calibration -------------------------------------------------
+# With auto_class_weights="Balanced", CatBoost's raw predict_proba is not a real
+# probability. A calibrator maps it onto one. Two methods, and the choice is a
+# real trade-off rather than a detail:
+#
+#   "sigmoid"  - Platt scaling: one logistic curve fitted on the raw score. Smooth
+#                and strictly increasing, so every student keeps a distinct score
+#                and the list can be ranked.
+#   "isotonic" - a step function. It fits the validation set more closely, but it
+#                maps whole intervals of raw score onto a single value: measured on
+#                this data it collapsed 677 distinct test scores to 24, put four of
+#                eight daily at-risk students on the identical probability, and cost
+#                0.038 PR-AUC. It needs considerably more validation data than we
+#                have to be worth that.
+#
+# Both are monotone, so neither invents a ranking - isotonic only destroys one, by
+# creating ties. Whichever is chosen, the training summary reports calibrated and
+# raw ROC-AUC / PR-AUC side by side, so the cost is visible.
+CALIBRATION_METHOD = "sigmoid"
 
 
 # --- Alert threshold selection --------------------------------------------
@@ -108,9 +149,9 @@ SHAP_TOP_N_FEATURES = 3
 
 # --- API input ranges -------------------------------------------------
 # Accepted (min, max) for each numeric field of POST /predict. A value outside
-# its range returns HTTP 422 (this is what stops monthly_fee_try = 1e18).
+# its range returns HTTP 422 (this is what stops monthly_value_try = 1e18).
 FEATURE_BOUNDS = {
-    "monthly_fee_try": (0, 1_000_000),
+    "monthly_value_try": (0, 1_000_000),
     "tenure_months": (0, 600),
     "program_adherence_rate": (0, 1),
     "weekly_study_hours_planned": (0, 168),
@@ -145,7 +186,7 @@ FEATURE_LABELS = {
     "city_tier": "Şehir kademesi",
     "parent_involvement": "Veli ilgisi",
     "plan_type": "Paket",
-    "monthly_fee_try": "Aylık ücret (TL)",
+    "monthly_value_try": "Aylık değer (TL)",
     "tenure_months": "Programdaki süresi (ay)",
     "program_adherence_rate": "Program uyum oranı",
     "weekly_study_hours_planned": "Planlanan haftalık çalışma (saat)",
@@ -165,6 +206,57 @@ FEATURE_LABELS = {
     "weekly_study_hours_actual_missing": "Çalışma saati verisi eksik",
     "satisfaction_missing": "Memnuniyet anketi doldurulmamış",
 }
+
+# --- Config consistency ------------------------------------------------------
+# FEATURES is the list a client onboarding edits, and three other tables have to
+# keep up with it: bounds for API validation, Turkish labels for the alert
+# message, and the subset that is categorical. Getting them out of step is the
+# single most likely onboarding mistake, and without this check it surfaces far
+# from its cause - a renamed feature raises KeyError inside the pydantic model
+# factory in api/main.py, which says nothing about config.py.
+def _validate_feature_config() -> None:
+    problems = []
+
+    duplicates = sorted({name for name in FEATURES if FEATURES.count(name) > 1})
+    if duplicates:
+        problems.append(f"FEATURES contains duplicates: {duplicates}")
+
+    unknown_cat = sorted(set(CAT_COLS) - set(FEATURES))
+    if unknown_cat:
+        problems.append(f"CAT_COLS names that are not in FEATURES: {unknown_cat}")
+
+    # Categorical features are passed to CatBoost by name and never bounds-checked,
+    # so only the numeric ones need an entry in FEATURE_BOUNDS.
+    numeric = [name for name in FEATURES if name not in CAT_COLS]
+    missing_bounds = [name for name in numeric if name not in FEATURE_BOUNDS]
+    if missing_bounds:
+        problems.append(f"FEATURES without a FEATURE_BOUNDS entry: {missing_bounds}")
+
+    missing_labels = [name for name in FEATURES if name not in FEATURE_LABELS]
+    if missing_labels:
+        problems.append(f"FEATURES without a FEATURE_LABELS entry: {missing_labels}")
+
+    # Not fatal on its own, but it is always a leftover from a rename.
+    stale_bounds = sorted(set(FEATURE_BOUNDS) - set(FEATURES))
+    if stale_bounds:
+        problems.append(f"FEATURE_BOUNDS entries for features that no longer exist: {stale_bounds}")
+
+    overlap = sorted(set(STUDENT_INFO) & set(FEATURES))
+    if overlap:
+        problems.append(f"columns in both STUDENT_INFO and FEATURES: {overlap}")
+
+    if TARGET_FEATURE in FEATURES:
+        problems.append(f"TARGET_FEATURE {TARGET_FEATURE!r} is also in FEATURES (label leakage)")
+
+    if problems:
+        raise ValueError(
+            "config.py is inconsistent - fix these before anything else runs:\n  - "
+            + "\n  - ".join(problems)
+        )
+
+
+_validate_feature_config()
+
 
 # Shown at the top of every alert message, so a mentor knows which programme the
 # alert is about when one inbox serves several clients.
