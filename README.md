@@ -91,7 +91,8 @@ Training always reads CSV and ignores `DATA_SOURCE`.
 | Command | What it does |
 |---|---|
 | `uvicorn api.main:app --reload` | run the API on `http://127.0.0.1:8000` |
-| `python scripts/test_api.py` | live smoke test against a running server |
+| `python scripts/test_api.py` | live smoke test against a running server, writes nothing |
+| `python scripts/test_api.py --write` | also test the writing endpoint (records a daily run) |
 
 ### Verifying and testing
 
@@ -210,7 +211,7 @@ scripts/
   send_daily_alerts.py        deliver today's alert to Telegram / email / webhook
   telegram_setup.py           find the chat id for .env, prove the bot can reach it
   verify_backend.py           run the whole chain end to end and report what works
-  test_api.py                 live smoke test (needs a running server)
+  test_api.py                 live smoke test (needs a running server; read-only by default)
 
 tests/                        pytest suite (77 tests)
 ```
