@@ -600,8 +600,24 @@ config edit rather than a migration.
 
 ## Known limitations
 
-- **The model is trained on synthetic data.** Every metric, and the chosen
-  threshold, is a placeholder until real client data arrives.
+- **The model is trained on synthetic data, and that data has two informative
+  columns.** Measured with `python scripts/compare_feature_sets.py`:
+
+  | feature set | PR-AUC |
+  |---|---|
+  | all 24 | 0.512 |
+  | without `mentor_contact_freq_per_month` + `days_since_last_contact` | 0.380 |
+  | only those two, plus the categoricals (7) | 0.508 |
+
+  Two columns carry the signal; the other twenty add 0.004. That is why every
+  at-risk student's explanation is led by the same feature - it is a property of
+  the dataset, not something feature selection can fix. Dropping those columns
+  does not diversify the explanations, it destroys the model. Every metric, and
+  the chosen threshold, is a placeholder until real client data arrives.
+- **A logistic-regression baseline still scores higher** (PR-AUC 0.537 against
+  0.512). CatBoost's complexity is not yet earning its place on this data; on the
+  two-column variant it does win, narrowly. Worth revisiting on real data before
+  assuming the gradient-boosted model is the right one.
 - **No scheduler.** The daily run is a cron line you have to add; nothing in the
   repo runs itself yet.
 - **Single-container Docker only.** No `docker-compose.yml` — no Postgres service,

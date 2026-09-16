@@ -79,7 +79,18 @@ def evaluate_model(y_true, churn_proba, *, threshold, k, raw_churn_proba=None):
         "brier_score": float(brier_score_loss(y_true, proba)),
     }
     if raw_churn_proba is not None:
-        metrics["brier_score_uncalibrated"] = float(
-            brier_score_loss(y_true, np.asarray(raw_churn_proba, dtype=float))
+        raw = np.asarray(raw_churn_proba, dtype=float)
+        metrics["brier_score_uncalibrated"] = float(brier_score_loss(y_true, raw))
+        # Ranking metrics before calibration too. Isotonic regression is monotone,
+        # so in theory it cannot change a ranking - in practice it maps whole
+        # intervals onto one value, and every tie it creates costs ROC-AUC and
+        # PR-AUC. When the calibrated numbers are the worse pair, calibration is
+        # buying reliability with resolution, and that trade has to be visible
+        # rather than inferred.
+        metrics["roc_auc_uncalibrated"] = float(roc_auc_score(y_true, raw))
+        metrics["average_precision_uncalibrated"] = float(
+            average_precision_score(y_true, raw)
         )
+        metrics["distinct_scores"] = int(np.unique(proba).size)
+        metrics["distinct_scores_uncalibrated"] = int(np.unique(raw).size)
     return metrics

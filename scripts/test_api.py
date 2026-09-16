@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pandas as pd
 
 from config import CAT_COLS, DAILY_DATA_PATH, FEATURE_BOUNDS, FEATURES
+from src.data.features import add_monthly_value
 
 BASE_URL = "http://127.0.0.1:8000"
 API_KEY = os.environ.get("API_KEY")
@@ -58,7 +59,8 @@ def skip(name, reason=""):
 
 
 def valid_predict_body(daily):
-    row = daily.iloc[0]
+    """POST /predict takes MODEL features, so derived ones have to be computed."""
+    row = add_monthly_value(daily).iloc[0]
     body = {}
     for feature in FEATURES:
         if feature in CAT_COLS:
