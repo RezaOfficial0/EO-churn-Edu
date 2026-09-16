@@ -33,7 +33,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pandas as pd
 
 from config import NOTIFY_CHANNELS, STUDENT_INFO
-from src.data.loader import latest_run_alerts, load_daily_students
+from src.data.features import add_monthly_value
+from src.data.loader import (
+    latest_run_alerts,
+    load_daily_students,
+    previous_run_probabilities,
+)
 from src.logging_setup import configure_logging
 from src.notifications.message import build_message
 from src.notifications.notify import CHANNELS, send_notifications
@@ -73,10 +78,25 @@ def todays_students() -> pd.DataFrame | None:
     out, with "veri yok" where a number would be.
     """
     try:
-        return load_daily_students()
+        # Same derivation the model saw, so a derived feature in the reasons shows
+        # its value instead of "veri yok".
+        return add_monthly_value(load_daily_students())
     except Exception as e:  # noqa: BLE001
         print(f"uyarı: öğrenci verisi okunamadı, değerler gösterilmeyecek ({e})", file=sys.stderr)
         return None
+
+
+def earlier_probabilities() -> dict[str, float]:
+    """The previous run's probabilities, used to show which way a repeat moved.
+
+    Optional like todays_students(): an unreadable alert log here costs the arrow
+    next to a repeat student, not the message.
+    """
+    try:
+        return previous_run_probabilities()
+    except Exception as e:  # noqa: BLE001
+        print(f"uyarı: önceki koşu okunamadı, değişim yönü gösterilmeyecek ({e})", file=sys.stderr)
+        return {}
 
 
 def main() -> int:
@@ -132,12 +152,18 @@ def main() -> int:
         return 1
 
     students = todays_students()
+    previous = earlier_probabilities()
 
     enabled = None
     if args.channels:
         enabled = [channel.strip().lower() for channel in args.channels.split(",") if channel.strip()]
 
-    subject, text = build_message(new_alerts, still_at_risk=still_at_risk, students=students)
+    subject, text = build_message(
+        new_alerts,
+        still_at_risk=still_at_risk,
+        students=students,
+        previous_probabilities=previous,
+    )
     print(text)
     print()
 
@@ -146,6 +172,7 @@ def main() -> int:
             new_alerts,
             still_at_risk=still_at_risk,
             students=students,
+            previous_probabilities=previous,
             enabled=enabled,
             dry_run=args.dry_run,
         )
