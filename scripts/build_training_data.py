@@ -22,8 +22,10 @@ def main() -> None:
     raw = data_loader(RAW_DATA_PATH)
     engineered, _learned = build_training_frame(raw)
 
-    # Keep the raw column order, then append the new engineered columns.
-    raw_columns = list(raw.columns)
+    # Keep the raw column order, then append the new engineered columns. A raw
+    # column the recipe consumes (monthly_fee_try -> monthly_value_try) is gone by
+    # now, so the order is taken from what survived rather than from the raw file.
+    raw_columns = [c for c in raw.columns if c in engineered.columns]
     new_columns = [c for c in engineered.columns if c not in raw_columns]
     engineered = engineered[raw_columns + new_columns]
 

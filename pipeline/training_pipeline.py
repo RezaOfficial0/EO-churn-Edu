@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config import (
+    CALIBRATION_METHOD,
     CALIBRATOR_PATH,
     CAT_COLS,
     DECISION_COST,
@@ -103,6 +104,7 @@ def run_training_pipeline(raw_data_path=RAW_DATA_PATH, model_path=MODEL_PATH):
         "chosen_threshold": chosen_threshold,
         "threshold_selection": threshold_selection,
         "imputation_values": imputation_values,
+        "calibration_method": CALIBRATION_METHOD,
         "calibrator_path": str(CALIBRATOR_PATH),
         "metrics": metrics,
         "cv_auc_mean": cv_auc["mean"],
@@ -152,3 +154,10 @@ def _log_summary(meta: dict) -> None:
     logger.info("test precision / recall: %.3f / %.3f", m["precision"], m["recall"])
     logger.info("brier calib / raw      : %.4f / %.4f", m["brier_score"],
                 m.get("brier_score_uncalibrated", float("nan")))
+    if "roc_auc_uncalibrated" in m:
+        logger.info("roc-auc calib / raw    : %.3f / %.3f", m["roc_auc"],
+                    m["roc_auc_uncalibrated"])
+        logger.info("pr-auc  calib / raw    : %.3f / %.3f", m["average_precision"],
+                    m["average_precision_uncalibrated"])
+        logger.info("farkli skor sayisi     : %d / %d (kalibre / ham)",
+                    m["distinct_scores"], m["distinct_scores_uncalibrated"])

@@ -1,7 +1,7 @@
 {
-  "trained_at": "2026-09-03T10:28:08Z",
+  "trained_at": "2026-09-16T15:46:21Z",
   "is_synthetic_data": true,
-  "data_file": "/Users/rizatalebi/PycharmProjects/EO-Churn-Edu/data/mentorluk_churn_veriseti.csv",
+  "data_file": "/Users/rizatalebi/PycharmProjects/EO-churn/data/mentorluk_churn_veriseti.csv",
   "data_rows": 3384,
   "data_sha256": "f0c092fbdd4b9c1267e27a3c1eeacd1d86a5e70b81bda9f22f556865517cfccd",
   "features": [
@@ -10,7 +10,7 @@
     "city_tier",
     "parent_involvement",
     "plan_type",
-    "monthly_fee_try",
+    "monthly_value_try",
     "tenure_months",
     "program_adherence_rate",
     "weekly_study_hours_planned",
@@ -42,17 +42,17 @@
     "depth": 4,
     "learning_rate": 0.05
   },
-  "catboost_tree_count": 150,
+  "catboost_tree_count": 145,
   "decision_cost": {
     "false_alarm": 1,
     "missed_churn": 3
   },
-  "chosen_threshold": 0.2,
+  "chosen_threshold": 0.29,
   "threshold_selection": {
-    "threshold": 0.2,
-    "expected_cost": 330,
-    "false_alarms": 162,
-    "missed_churns": 56
+    "threshold": 0.29,
+    "expected_cost": 321,
+    "false_alarms": 147,
+    "missed_churns": 58
   },
   "imputation_values": {
     "weekly_study_hours_actual": {
@@ -68,35 +68,40 @@
       "_global": 3.6
     }
   },
-  "calibrator_path": "/Users/rizatalebi/PycharmProjects/EO-Churn-Edu/saved_models/calibrator.joblib",
+  "calibration_method": "sigmoid",
+  "calibrator_path": "/Users/rizatalebi/PycharmProjects/EO-churn/saved_models/calibrator.joblib",
   "metrics": {
-    "threshold": 0.2,
-    "roc_auc": 0.7133014375165359,
-    "average_precision": 0.48585781399799505,
-    "precision": 0.4188679245283019,
-    "recall": 0.6032608695652174,
-    "f1": 0.49443207126948774,
-    "precision_at_20": 0.65,
-    "lift_at_20": 2.3915760869565217,
+    "threshold": 0.29,
+    "roc_auc": 0.7184936943293059,
+    "average_precision": 0.5116516550363409,
+    "precision": 0.430327868852459,
+    "recall": 0.5706521739130435,
+    "f1": 0.49065420560747663,
+    "precision_at_20": 0.75,
+    "lift_at_20": 2.7595108695652173,
     "confusion_matrix": [
       [
-        339,
-        154
+        354,
+        139
       ],
       [
-        73,
-        111
+        79,
+        105
       ]
     ],
-    "brier_score": 0.17321221461780506,
-    "brier_score_uncalibrated": 0.201454952306439
+    "brier_score": 0.17276078977243386,
+    "brier_score_uncalibrated": 0.20303579046499076,
+    "roc_auc_uncalibrated": 0.7184936943293059,
+    "average_precision_uncalibrated": 0.5116516550363409,
+    "distinct_scores": 677,
+    "distinct_scores_uncalibrated": 677
   },
-  "cv_auc_mean": 0.742294774154084,
-  "cv_auc_std": 0.02167276679122889,
+  "cv_auc_mean": 0.7405978642140019,
+  "cv_auc_std": 0.02327751903712571,
   "baseline_metrics": {
     "logistic_regression": {
-      "roc_auc": 0.7341255842666901,
-      "average_precision": 0.5388350699748921
+      "roc_auc": 0.7337066760737279,
+      "average_precision": 0.537292452441735
     },
     "single_rule": {
       "column": "days_since_last_contact",
@@ -112,11 +117,11 @@
       },
       "12. Sınıf": {
         "churners": 85,
-        "missed": 32
+        "missed": 34
       },
       "Mezun": {
         "churners": 53,
-        "missed": 21
+        "missed": 25
       }
     },
     "track": {
@@ -126,11 +131,11 @@
       },
       "Eşit Ağırlık": {
         "churners": 58,
-        "missed": 22
+        "missed": 23
       },
       "Sayısal": {
         "churners": 89,
-        "missed": 38
+        "missed": 43
       },
       "Sözel": {
         "churners": 30,
@@ -140,11 +145,11 @@
     "city_tier": {
       "Tier 1 (Büyükşehir)": {
         "churners": 111,
-        "missed": 43
+        "missed": 45
       },
       "Tier 2": {
         "churners": 49,
-        "missed": 21
+        "missed": 25
       },
       "Tier 3": {
         "churners": 24,
@@ -154,25 +159,25 @@
     "parent_involvement": {
       "Düşük": {
         "churners": 40,
-        "missed": 11
+        "missed": 13
       },
       "Orta": {
         "churners": 86,
-        "missed": 37
+        "missed": 38
       },
       "Yüksek": {
         "churners": 58,
-        "missed": 25
+        "missed": 28
       }
     },
     "plan_type": {
       "3 Aylık": {
         "churners": 68,
-        "missed": 30
+        "missed": 31
       },
       "Aylık": {
         "churners": 80,
-        "missed": 31
+        "missed": 36
       },
       "Yıllık": {
         "churners": 36,
