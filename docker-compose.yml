@@ -1,0 +1,87 @@
+# EO-Churn — tek komutla ayağa kalkan demo yığını.
+#
+#     docker compose up -d --build        db + init + api
+#     ./scripts/demo_up.sh                aynısı, dashboard da varsa o da
+#
+# Dashboard ayrı bir repo olduğu için ayrı bir dosyada tanımlı. Böylece bu dosya
+# tek başına klonlanmış bir backend'de de çalışır:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.dashboard.yml up
+#
+# Retention servisi hazır olduğunda buraya dördüncü bir blok olarak eklenecek -
+# servis adlandırması, ağ ve env konvansiyonu ona göre kuruldu.
+
+name: eo-churn
+
+services:
+  # --- Veritabanı ------------------------------------------------------------
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eochurn}
+      POSTGRES_DB: ${POSTGRES_DB:-eo_churn}
+    ports:
+      # DataGrip'ten bakabilmek için dışarı açık. Çakışma olursa .env.docker'da
+      # DB_PORT'u değiştir - container içi port 5432 kalır.
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      # Postgres 18+ stores data in a major-version subdirectory
+      # (/var/lib/postgresql/18/docker), so the mount belongs ONE LEVEL UP.
+      # Mounting .../data instead leaves the volume unused and the image
+      # refuses to start - see docker-library/postgres#1259. Moving this line
+      # also means a volume created by an older config must be dropped
+      # (`down -v`) before it will come up.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      # api ve init, veritabanı gerçekten sorgu kabul edene kadar başlamasın.
+      # "container ayakta" ile "Postgres hazır" arasında birkaç saniye var ve
+      # o fark, elle kurulumda yaşadığımız bağlantı hatalarının kaynağı.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-eo_churn}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # --- Tek seferlik kurulum --------------------------------------------------
+  # Şema + migration'lar, günlük veri, ve bir günlük koşu. Bitince çıkar.
+  # Bunun sayesinde `up` sonrası dashboard'u açtığında liste DOLU geliyor -
+  # elle hiçbir komut çalıştırman gerekmiyor.
+  # Üçü de idempotent, her `up`ta yeniden koşması zararsız.
+  init:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env.docker
+    environment:
+      DATA_SOURCE: db
+    command: >
+      sh -c "python scripts/init_db.py &&
+             python scripts/load_daily_students.py &&
+             python -m pipeline.daily_pipeline"
+    restart: "no"
+
+  # --- API -------------------------------------------------------------------
+  api:
+    build: .
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    env_file: .env.docker
+    environment:
+      DATA_SOURCE: db
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      # catboost + shap ilk import'u soğukta uzun sürüyor; erken "unhealthy"
+      # damgası yememesi için başlangıç payı.
+      start_period: 45s
+    restart: unless-stopped
+
+volumes:
+  pgdata:

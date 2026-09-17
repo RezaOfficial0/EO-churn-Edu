@@ -8,8 +8,11 @@ __pycache__/
 .vscode/
 .DS_Store
 
-# Local secrets
+# Local secrets. `.env` venv ile calisirken, `.env.docker` compose ile;
+# ikisi de parola tasiyor, ikisi de commit edilmez. Ornek dosyalari
+# (.env.example / .env.docker.example) commit'li ve parolasiz.
 .env
+.env.docker
 
 # CatBoost training scratch output
 catboost_info/
