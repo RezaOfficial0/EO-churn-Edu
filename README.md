@@ -36,6 +36,113 @@ That runs on CSV files. To use PostgreSQL instead, see
 
 ---
 
+## Running with Docker
+
+The manual path above is for developing. For a demo — or for any machine that
+should not need Python, Postgres and npm installed — the whole stack comes up
+with one command:
+
+```bash
+cp .env.docker.example .env.docker
+./scripts/demo_up.sh
+```
+
+That builds the images, starts Postgres, creates the schema, loads the daily
+data, runs one daily pipeline, waits until the API reports healthy, and prints
+the URLs. The dashboard list is **already populated** when you open it — no
+manual step in between. Everything the script runs is idempotent, so running it
+again is safe.
+
+| | |
+|---|---|
+| Dashboard | http://localhost:5173 |
+| API docs | http://localhost:8000/docs |
+| Postgres | `localhost:5432` (change with `DB_PORT`) |
+
+### What is in the stack
+
+| Service | Role |
+|---|---|
+| `db` | postgres:18, data kept in the `pgdata` volume |
+| `init` | schema + migrations, daily data, one pipeline run — then exits |
+| `api` | uvicorn, starts only after `init` has succeeded |
+| `dashboard` | the React app built and served by nginx (separate compose file) |
+
+`init` exists so that `up` alone produces a working demo. `api` waits for it via
+`depends_on: condition: service_completed_successfully`, and `init` in turn waits
+for `db` to answer `pg_isready` — not merely to be "running", which is the gap
+that caused the connection errors in the manual setup.
+
+The dashboard lives in its own repository, so it is defined in a second file and
+is only added when that repo sits next to this one:
+
+```
+Eo-Churn-FullProject/
+  EO-churn/                      <- you are here
+  Eo-Churn-Dashboard-demo-Edu/
+```
+
+`demo_up.sh` detects that and includes `docker-compose.dashboard.yml`
+automatically; without it you get backend only.
+
+### Settings
+
+`.env.docker` is separate from `.env` and must stay that way: `.env` points at
+`localhost` for venv development, `.env.docker` points at the `db` service inside
+the compose network. Both carry secrets and neither is committed — the
+`.env.docker.example` template is.
+
+| Variable | Why you would change it |
+|---|---|
+| `DB_PORT` | a local Postgres already holds 5432 — set `5433` |
+| `API_PORT` | something else holds 8000 |
+| `DASHBOARD_PORT` | something else holds 5173 |
+| `VITE_API_BASE` | must match `API_PORT`; baked in at **build** time, so change it and rebuild |
+| `NOTIFY_CHANNELS` | empty prints to stdout only; `telegram` actually sends |
+
+Values containing spaces must be quoted (`NOTIFY_TITLE="EO-Churn — Risk"`). The
+scripts never source this file as shell, and compose parses it via `--env-file`,
+but quoting keeps it unambiguous for anything else that reads it.
+
+### Before a demo
+
+```bash
+./scripts/demo_reset.sh
+```
+
+The `status` field (`new` / `still_at_risk`) is computed against the *previous*
+run. Without a reset, a second demo on the same day shows "0 new" and a message
+with no reasons in it. The reset truncates `alerts`, reloads the daily data and
+leaves exactly one run behind, so every student reads as new.
+
+To preview the notification without sending anything:
+
+```bash
+./scripts/demo_message.sh
+```
+
+That is the `--dry-run` path, so nothing is sent even with
+`NOTIFY_CHANNELS` filled in.
+
+### Stopping
+
+```bash
+docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.dashboard.yml down     # keeps the data
+docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.dashboard.yml down -v  # wipes it; next up rebuilds from scratch
+```
+
+### When it does not come up
+
+| Symptom | Cause |
+|---|---|
+| `docker version` hangs after the Client block | Docker Desktop's engine is not running — restart Docker Desktop |
+| `bind: address already in use` | port taken; change `DB_PORT` / `API_PORT` / `DASHBOARD_PORT` |
+| dashboard loads but the list is empty | `VITE_API_BASE` does not match `API_PORT` — fix it and rebuild with `--build` |
+| `db` restarts in a loop, log mentions "unused mount/volume" | a `pgdata` volume created by an older config — `down -v` and start again (Postgres 18+ wants the mount at `/var/lib/postgresql`, not `/var/lib/postgresql/data`) |
+| `demo_up.sh` times out | `docker compose --env-file .env.docker logs init api` |
+
+---
+
 ## Command reference
 
 Every command in the project, in the order you would meet them.
@@ -109,8 +216,15 @@ Training always reads CSV and ignores `DATA_SOURCE`.
 
 | Command | What it does |
 |---|---|
-| `docker build -t eo-churn .` | build the API image |
-| `docker run -p 8000:8000 --env-file .env eo-churn` | run it |
+| `./scripts/demo_up.sh` | build and start the whole stack, wait until the API is healthy |
+| `./scripts/demo_reset.sh` | back to one clean run — do this before every demo |
+| `./scripts/demo_message.sh` | print the daily alert message without sending it |
+| `docker compose --env-file .env.docker ps` | what is running |
+| `docker compose --env-file .env.docker logs -f api` | follow the API log |
+| `docker compose --env-file .env.docker down` | stop, keep the data |
+| `docker compose --env-file .env.docker down -v` | stop and wipe the database |
+
+See [Running with Docker](#running-with-docker) for the details.
 
 ---
 
