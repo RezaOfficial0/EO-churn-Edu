@@ -1,0 +1,169 @@
+{
+  "trained_at": "2026-09-18T10:40:31Z",
+  "model_type": "PyTorch ANN (model_3)",
+  "use_class_weight": false,
+  "data_file": "C:\\Users\\Mehmet ALTUNTAŞ\\Desktop\\EO-churn-Edu\\data\\updated_data.csv",
+  "data_rows": 3384,
+  "data_sha256": "54e02db95c9594c9082d34c9149efb3b08328a8faad4ebf9f5b0358ea376ccde",
+  "features": [
+    "grade",
+    "track",
+    "city_tier",
+    "parent_involvement",
+    "plan_type",
+    "monthly_value_try",
+    "tenure_months",
+    "program_adherence_rate",
+    "weekly_study_hours_planned",
+    "weekly_study_hours_actual",
+    "mentor_contact_freq_per_month",
+    "days_since_last_contact",
+    "message_response_time_hours",
+    "late_response_count_30d",
+    "trial_exam_count_total",
+    "trial_exam_avg_net",
+    "trial_exam_score_trend",
+    "missed_trial_exam_count",
+    "payment_delay_days_avg",
+    "support_ticket_count_90d",
+    "satisfaction_survey_score",
+    "days_to_next_exam",
+    "weekly_study_hours_actual_missing",
+    "satisfaction_missing"
+  ],
+  "encoded_features_count": 30,
+  "cat_cols": [
+    "grade",
+    "track",
+    "city_tier",
+    "parent_involvement",
+    "plan_type"
+  ],
+  "decision_cost": {
+    "false_alarm": 1,
+    "missed_churn": 3
+  },
+  "chosen_threshold": 0.3,
+  "threshold_selection": {
+    "threshold": 0.3,
+    "expected_cost": 372,
+    "false_alarms": 159,
+    "missed_churns": 71
+  },
+  "imputation_values": {
+    "weekly_study_hours_actual": {
+      "3 Aylık": 9.0,
+      "Aylık": 9.0,
+      "Yıllık": 9.2,
+      "_global": 9.0
+    },
+    "satisfaction_survey_score": {
+      "3 Aylık": 3.5,
+      "Aylık": 3.6,
+      "Yıllık": 3.6,
+      "_global": 3.6
+    }
+  },
+  "metrics": {
+    "threshold": 0.3,
+    "roc_auc": 0.6979892406737808,
+    "average_precision": 0.45982724482965565,
+    "precision": 0.42748091603053434,
+    "recall": 0.6086956521739131,
+    "f1": 0.5022421524663677,
+    "precision_at_20": 0.7,
+    "lift_at_20": 2.5755434782608693,
+    "confusion_matrix": [
+      [
+        343,
+        150
+      ],
+      [
+        72,
+        112
+      ]
+    ],
+    "brier_score": 0.18731206033350398,
+    "brier_score_uncalibrated": 0.18731206033350398,
+    "roc_auc_uncalibrated": 0.6979892406737808,
+    "average_precision_uncalibrated": 0.45982724482965565,
+    "distinct_scores": 677,
+    "distinct_scores_uncalibrated": 677
+  },
+  "error_analysis_false_negatives": {
+    "grade": {
+      "11. Sınıf": {
+        "churners": 46,
+        "missed": 16
+      },
+      "12. Sınıf": {
+        "churners": 85,
+        "missed": 31
+      },
+      "Mezun": {
+        "churners": 53,
+        "missed": 25
+      }
+    },
+    "track": {
+      "Dil": {
+        "churners": 7,
+        "missed": 3
+      },
+      "Eşit Ağırlık": {
+        "churners": 58,
+        "missed": 18
+      },
+      "Sayısal": {
+        "churners": 89,
+        "missed": 42
+      },
+      "Sözel": {
+        "churners": 30,
+        "missed": 9
+      }
+    },
+    "city_tier": {
+      "Tier 1 (Büyükşehir)": {
+        "churners": 111,
+        "missed": 44
+      },
+      "Tier 2": {
+        "churners": 49,
+        "missed": 16
+      },
+      "Tier 3": {
+        "churners": 24,
+        "missed": 12
+      }
+    },
+    "parent_involvement": {
+      "Düşük": {
+        "churners": 40,
+        "missed": 14
+      },
+      "Orta": {
+        "churners": 86,
+        "missed": 34
+      },
+      "Yüksek": {
+        "churners": 58,
+        "missed": 24
+      }
+    },
+    "plan_type": {
+      "3 Aylık": {
+        "churners": 68,
+        "missed": 28
+      },
+      "Aylık": {
+        "churners": 80,
+        "missed": 32
+      },
+      "Yıllık": {
+        "churners": 36,
+        "missed": 12
+      }
+    }
+  }
+}
