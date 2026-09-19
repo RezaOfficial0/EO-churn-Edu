@@ -13,3 +13,7 @@ pydantic==2.13.5
 python-dotenv==1.2.3
 psycopg2-binary==2.9.12
 SQLAlchemy==2.0.52
+# Needed by fastapi.testclient, which scripts/verify_backend.py uses for its
+# last step. verify_backend.py is a documented runtime command (it is in the
+# Quickstart), so this is a runtime dependency, not a test-only one.
+httpx==0.28.1
