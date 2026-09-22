@@ -11,6 +11,14 @@ from dotenv import load_dotenv
 load_dotenv()  # read .env (if present) into the environment
 
 
+# gather secret env statements and pass a str env with a properate Format
+# env(abc/n) -> abc
+#env(" " , "" , "/n") -> None
+def _env_secret(name: str) -> str | None:
+    return (os.getenv(name) or "").strip() or None
+
+
+
 # --- File locations -----------------------------------------------------------
 # Anchored to this file, so they resolve the same from any working directory
 # (repo root, Docker WORKDIR, a systemd unit, ...).
@@ -265,8 +273,8 @@ NOTIFY_TITLE = os.environ.get("NOTIFY_TITLE", "EO-Churn — Günlük Risk Uyarı
 
 # --- Environment-driven settings (see .env.example) ----------------
 DATA_SOURCE = os.getenv("DATA_SOURCE", "csv")  # "csv" or "db"
-API_KEY = os.environ.get("API_KEY") or None
-DATABASE_URL = os.getenv("DATABASE_URL") or None
+API_KEY = _env_secret("API_KEY") or None
+DATABASE_URL = _env_secret("DATABASE_URL") or None
 
 
 # Browser origins allowed to call the API (CORS).
@@ -289,15 +297,22 @@ NOTIFY_CHANNELS = [
     if channel.strip()
 ]
 
+
+
+
+
+
+
+
 # Telegram: talk to @BotFather to create a bot and get the token; the chat id is
 # the conversation (or group) the bot posts into.
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or None
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID") or None
+TELEGRAM_BOT_TOKEN = _env_secret("TELEGRAM_BOT_TOKEN") or None
+TELEGRAM_CHAT_ID = _env_secret("TELEGRAM_CHAT_ID") or None
 
 # Email over SMTP. SMTP_TO is comma-separated.
 SMTP_HOST = os.environ.get("SMTP_HOST") or None
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
-SMTP_USER = os.environ.get("SMTP_USER") or None
+SMTP_USER = _env_secret("SMTP_USER") or None
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD") or None
 SMTP_FROM = os.environ.get("SMTP_FROM") or SMTP_USER
 SMTP_TO = [
@@ -310,4 +325,4 @@ SMTP_STARTTLS = os.environ.get("SMTP_STARTTLS", "true").lower() not in {"false",
 
 # Webhook that scripts/send_daily_alerts.py posts new at-risk students to
 # (Slack / Discord "incoming webhook" URL, or anything accepting {"text": ...}).
-ALERT_WEBHOOK_URL = os.environ.get("ALERT_WEBHOOK_URL") or None
+ALERT_WEBHOOK_URL = _env_secret("ALERT_WEBHOOK_URL") or None
