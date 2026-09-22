@@ -8,6 +8,7 @@ the standard library's smtplib.
 """
 import json
 import logging
+import re
 import smtplib
 import urllib.error
 import urllib.request
@@ -31,6 +32,10 @@ logger = logging.getLogger(__name__)
 TIMEOUT_SECONDS = 15
 # Telegram rejects anything longer; truncate rather than fail to deliver.
 TELEGRAM_MAX_CHARS = 4096
+
+# Telegram bot token format (digits:secret). Checked before the token goes
+# into the request URL: a malformed token would otherwise leak via the error message.
+TELEGRAM_TOKEN_PATTERN = re.compile(r"\d+:[A-Za-z0-9_-]+")
 
 
 class NotConfigured(Exception):
@@ -59,6 +64,11 @@ def send_telegram(text: str) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         raise NotConfigured(
             "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must both be set (see .env.example)"
+        )
+    if not TELEGRAM_TOKEN_PATTERN.fullmatch(TELEGRAM_BOT_TOKEN):
+        raise NotConfigured(
+            "TELEGRAM_BOT_TOKEN is malformed (expected digits:letters, e.g. 123456:ABC-def). "
+            "Copy it again from @BotFather. Value not shown."
         )
     if len(text) > TELEGRAM_MAX_CHARS:
         text = text[: TELEGRAM_MAX_CHARS - 20].rstrip() + "\n... (kısaltıldı)"

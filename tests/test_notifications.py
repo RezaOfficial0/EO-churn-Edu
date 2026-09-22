@@ -281,7 +281,7 @@ def test_telegram_truncates_instead_of_failing(monkeypatch):
     from src.notifications import channels
 
     captured = {}
-    monkeypatch.setattr(channels, "TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setattr(channels, "TELEGRAM_BOT_TOKEN", "1:t")
     monkeypatch.setattr(channels, "TELEGRAM_CHAT_ID", "c")
     monkeypatch.setattr(
         channels.urllib.request,
@@ -373,7 +373,7 @@ def test_http_error_body_is_surfaced(monkeypatch):
             request.full_url, 400, "Bad Request", {}, io.BytesIO(b'{"description":"chat not found"}')
         )
 
-    monkeypatch.setattr(channels, "TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setattr(channels, "TELEGRAM_BOT_TOKEN", "1:t")
     monkeypatch.setattr(channels, "TELEGRAM_CHAT_ID", "c")
     monkeypatch.setattr(channels.urllib.request, "urlopen", fake_urlopen)
 
