@@ -68,10 +68,14 @@ def send_notifications(
                 channels.send_webhook(text)
             results[channel] = "sent"
         except channels.NotConfigured as e:
-            results[channel] = f"not configured: {e}"
-            logger.warning("%s: not configured - %s", channel, e)
+            # Second line of defence: channels that do not go through _post_json
+            # (email) and future ones must not leak a secret into the log either.
+            message = channels.redact(str(e))
+            results[channel] = f"not configured: {message}"
+            logger.warning("%s: not configured - %s", channel, message)
         except Exception as e:  # noqa: BLE001 - a channel must never fail the run
-            results[channel] = f"error: {type(e).__name__}: {e}"
-            logger.error("%s: delivery failed - %s", channel, e)
+            message = channels.redact(f"{type(e).__name__}: {e}")
+            results[channel] = f"error: {message}"
+            logger.error("%s: delivery failed - %s", channel, message)
 
     return results
