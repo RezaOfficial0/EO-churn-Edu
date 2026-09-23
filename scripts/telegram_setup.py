@@ -21,25 +21,36 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from src.notifications.channels import TELEGRAM_TOKEN_PATTERN, redact
 
 API = "https://api.telegram.org/bot{token}/{method}"
 
 
 def call(method: str, payload: dict | None = None) -> dict:
-    url = API.format(token=TELEGRAM_BOT_TOKEN, method=method)
-    data = json.dumps(payload).encode() if payload else None
-    request = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"} if data else {}
-    )
+    """Call a Bot API method. Never raises, and never returns the token in a message.
+
+    Every failure becomes {"ok": False, "description": ...}, redacted, so a bad
+    network or a malformed token cannot print the token in a traceback.
+    """
     try:
+        url = API.format(token=TELEGRAM_BOT_TOKEN, method=method)
+        data = json.dumps(payload).encode() if payload else None
+        request = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"} if data else {}
+        )
         with urllib.request.urlopen(request, timeout=15) as response:
             return json.loads(response.read())
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
         try:
-            return json.loads(body)
+            result = json.loads(body)
         except ValueError:
-            return {"ok": False, "description": f"HTTP {e.code}: {body[:200]}"}
+            return {"ok": False, "description": redact(f"HTTP {e.code}: {body[:200]}")}
+        if isinstance(result, dict) and "description" in result:
+            result["description"] = redact(result["description"])
+        return result
+    except Exception as e:  # noqa: BLE001 - reported as a failed call, redacted
+        return {"ok": False, "description": redact(f"{type(e).__name__}: {e}")}
 
 
 def describe_chat(chat: dict) -> str:
@@ -64,6 +75,14 @@ def main() -> int:
             "error: TELEGRAM_BOT_TOKEN ayarlı değil.\n"
             "Telegram'da @BotFather ile konuş, /newbot ile bot oluştur, verdiği token'ı"
             " .env içine TELEGRAM_BOT_TOKEN olarak yaz.",
+            file=sys.stderr,
+        )
+        return 1
+    if not TELEGRAM_TOKEN_PATTERN.fullmatch(TELEGRAM_BOT_TOKEN):
+        print(
+            "error: TELEGRAM_BOT_TOKEN beklenen bicimde degil (<rakamlar>:<harf/rakam>, "
+            "bosluk veya satir sonu olmadan). Deger guvenlik icin gosterilmiyor - "
+            ".env'de tirnak icinde bosluk ya da gorunmeyen bir karakter olabilir.",
             file=sys.stderr,
         )
         return 1

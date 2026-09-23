@@ -15,6 +15,7 @@ import urllib.request
 from email.message import EmailMessage
 
 from config import (
+    API_KEY,
     ALERT_WEBHOOK_URL,
     SMTP_FROM,
     SMTP_HOST,
@@ -37,26 +38,49 @@ TELEGRAM_MAX_CHARS = 4096
 # into the request URL: a malformed token would otherwise leak via the error message.
 TELEGRAM_TOKEN_PATTERN = re.compile(r"\d+:[A-Za-z0-9_-]+")
 
+# Replaces a secret wherever redact() finds one.
+REDACTED = "***"
+# The token as it appears inside a Telegram URL: /bot<anything up to the next /, space or quote>.
+_BOT_PATH = re.compile(r"/bot[^/\s'\"]+")
+# A bare Telegram-token-shaped string. Stricter than TELEGRAM_TOKEN_PATTERN so ordinary
+# text such as "12:30" is left alone - over-redacting would hide useful error details.
+_TOKEN_SHAPED = re.compile(r"\d{5,}:[A-Za-z0-9_-]{20,}")
+
+
+def redact(text: str) -> str:
+    """<tek cümle: ne yapar, neden var>"""
+    for secret in (TELEGRAM_BOT_TOKEN, SMTP_PASSWORD, API_KEY, ALERT_WEBHOOK_URL):
+        if secret == None or len(secret) < 8:
+            continue
+        text = text.replace(secret, REDACTED)
+    text = _BOT_PATH.sub("/bot" + REDACTED, text)
+    text = _TOKEN_SHAPED.sub(REDACTED, text)
+    return text
 
 class NotConfigured(Exception):
     """The channel was asked for but its settings are missing."""
 
 
 def _post_json(url: str, payload: dict) -> None:
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+
     try:
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
             response.read()
     except urllib.error.HTTPError as e:
         # The body carries the actual reason (bad token, wrong chat id, ...) and
         # is far more useful than "HTTP Error 400: Bad Request".
         detail = e.read().decode(errors="replace")[:300]
-        raise RuntimeError(f"HTTP {e.code}: {detail}") from e
+        raise RuntimeError(redact(f"HTTP {e.code}: {detail}")) from None
+    except Exception as e:
+        raise RuntimeError(redact(f"{type(e).__name__}: {e}")) from None
+
+
 
 
 # --- Telegram ---------------------------------------------------------------
