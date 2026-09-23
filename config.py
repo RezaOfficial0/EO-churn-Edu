@@ -215,6 +215,23 @@ FEATURE_LABELS = {
     "satisfaction_missing": "Memnuniyet anketi doldurulmamış",
 }
 
+
+
+#CLIENT LABELS____________________________________________________________
+CLIENT_ID ="edu-demo"
+CLIENT_DOMAIN ="education" #education / saas / fintech / other
+PROGRAM_NAME = "EO Mentorluk Programı"
+CAMPAIGN_AUDIENCE = "relationship_owner" #client / team / relationship_owner
+CAMPAIGN_LANGUAGE = "tr"  #tr / en
+CAMPAIGN_COOLDOWN_DAYS = 30 #Aynı öğrenciye tekrar kampanya üretmeden önce beklenecek gün.
+CAMPAIGN_MAX_STUDENTS_PER_RUN = 50 	#Tek çalışmada LLM'e gönderilecek maksimum öğrenci.
+
+
+
+
+
+
+
 # --- Config consistency ------------------------------------------------------
 # FEATURES is the list a client onboarding edits, and three other tables have to
 # keep up with it: bounds for API validation, Turkish labels for the alert
@@ -325,4 +342,14 @@ SMTP_STARTTLS = os.environ.get("SMTP_STARTTLS", "true").lower() not in {"false",
 
 # Webhook that scripts/send_daily_alerts.py posts new at-risk students to
 # (Slack / Discord "incoming webhook" URL, or anything accepting {"text": ...}).
+ALERT_WEBHOOK_URL = os.environ.get("ALERT_WEBHOOK_URL") or None
+
+
+
+
+#LLM______________________________________________________-
+LLM_SERVICE_URL = os.environ.get("LLM_SERVICE_URL") or None
+LLM_SERVICE_KEY = os.environ.get("LLM_SERVICE_KEY") or None
+LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", 180))
+CAMPAIGN_FEATURE =os.environ.get("CAMPAIGN_FEATURE", "false").lower() not in {"false", "0", "no"}
 ALERT_WEBHOOK_URL = _env_secret("ALERT_WEBHOOK_URL") or None
