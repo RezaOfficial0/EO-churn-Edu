@@ -23,6 +23,7 @@ def send_notifications(
     *,
     still_at_risk: pd.DataFrame | None = None,
     students: pd.DataFrame | None = None,
+    previous_probabilities: dict[str, float] | None = None,
     run_at: datetime | None = None,
     enabled: list[str] | None = None,
     dry_run: bool = False,
@@ -39,7 +40,11 @@ def send_notifications(
         raise ValueError(f"unknown notification channel(s): {unknown}. known: {list(CHANNELS)}")
 
     subject, text = build_message(
-        new_alerts, still_at_risk=still_at_risk, students=students, run_at=run_at
+        new_alerts,
+        still_at_risk=still_at_risk,
+        students=students,
+        previous_probabilities=previous_probabilities,
+        run_at=run_at,
     )
     results: dict[str, str] = {}
 
@@ -52,7 +57,11 @@ def send_notifications(
                 channels.send_telegram(text)
             elif channel == "email":
                 html = build_html(
-                    new_alerts, still_at_risk=still_at_risk, students=students, run_at=run_at
+                    new_alerts,
+                    still_at_risk=still_at_risk,
+                    students=students,
+                    previous_probabilities=previous_probabilities,
+                    run_at=run_at,
                 )
                 channels.send_email(subject, text, html)
             elif channel == "webhook":

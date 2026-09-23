@@ -58,6 +58,71 @@ def test_message_is_turkish_and_carries_the_numbers():
     assert "ÖNCEKİ KOŞUDA DA UYARI VERİLMİŞTİ (1)" in text
 
 
+def test_repeat_students_carry_probability_trend_and_one_reason():
+    """A repeat line has to be actionable on its own: how likely, which way it is
+    moving, and why. "same eight names again" is what makes people stop reading."""
+    repeats = _alerts(
+        [
+            {"student_id": "UP", "churn_probability": 0.56, "status": "still_at_risk",
+             "top_reasons": "days_since_last_contact (+1.01)", "top_reasons_detail": []},
+            {"student_id": "FLAT", "churn_probability": 0.34, "status": "still_at_risk",
+             "top_reasons": "days_since_last_contact (+0.20)", "top_reasons_detail": []},
+            {"student_id": "DOWN", "churn_probability": 0.27, "status": "still_at_risk",
+             "top_reasons": "days_since_last_contact (+0.10)", "top_reasons_detail": []},
+        ]
+    )
+    students = pd.DataFrame([{"student_id": "UP", "days_since_last_contact": 40.0}])
+    previous = {"UP": 0.42, "FLAT": 0.34, "DOWN": 0.45}
+
+    _, text = msg.build_message(
+        NEW, still_at_risk=repeats, students=students,
+        previous_probabilities=previous, run_at=RUN_AT,
+    )
+
+    assert "UP — %56 ↑ (önceki %42)" in text
+    assert "FLAT — %34 → (önceki %34)" in text
+    assert "DOWN — %27 ↓ (önceki %45)" in text
+    # the reason, with the value joined from today's students where we have it
+    assert "Son iletişimden bu yana (gün): 40" in text
+
+
+def test_repeat_without_a_previous_probability_omits_the_trend():
+    """A student's first appearance in the previous-run map is simply absent."""
+    _, text = msg.build_message(NEW, still_at_risk=REPEAT, students=STUDENTS, run_at=RUN_AT)
+
+    assert "STU300006 — %55" in text
+    assert "önceki" not in text
+
+
+def test_repeat_reason_prefers_a_risk_increasing_one():
+    """The strongest reason on a still-at-risk student can be one that LOWERS the
+    risk; leading with it reads as reassurance about someone still on the list."""
+    repeats = _alerts(
+        [{"student_id": "MIXED", "churn_probability": 0.27, "status": "still_at_risk",
+          "top_reasons": "days_since_last_contact (-0.34), payment_delay_days_avg (+0.29)",
+          "top_reasons_detail": []}]
+    )
+
+    _, text = msg.build_message(NEW, still_at_risk=repeats, run_at=RUN_AT)
+
+    assert "Ortalama ödeme gecikmesi" in text
+    assert "MIXED — %27 · Son iletişimden bu yana" not in text
+
+
+def test_long_repeat_lists_are_capped():
+    repeats = _alerts(
+        [
+            {"student_id": f"S{i}", "churn_probability": 0.3, "status": "still_at_risk",
+             "top_reasons": "", "top_reasons_detail": []}
+            for i in range(msg.MAX_REPEAT_LINES + 4)
+        ]
+    )
+
+    _, text = msg.build_message(NEW, still_at_risk=repeats, run_at=RUN_AT)
+
+    assert "... ve 4 öğrenci daha." in text
+
+
 def test_reasons_fall_back_to_the_csv_string():
     """The CSV alert log has no top_reasons_detail column - parse the display string."""
     row = {"top_reasons": "days_since_last_contact (+0.91), payment_delay_days_avg (-0.17)",
@@ -216,7 +281,7 @@ def test_telegram_truncates_instead_of_failing(monkeypatch):
     from src.notifications import channels
 
     captured = {}
-    monkeypatch.setattr(channels, "TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setattr(channels, "TELEGRAM_BOT_TOKEN", "1:t")
     monkeypatch.setattr(channels, "TELEGRAM_CHAT_ID", "c")
     monkeypatch.setattr(
         channels.urllib.request,
@@ -308,7 +373,7 @@ def test_http_error_body_is_surfaced(monkeypatch):
             request.full_url, 400, "Bad Request", {}, io.BytesIO(b'{"description":"chat not found"}')
         )
 
-    monkeypatch.setattr(channels, "TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setattr(channels, "TELEGRAM_BOT_TOKEN", "1:t")
     monkeypatch.setattr(channels, "TELEGRAM_CHAT_ID", "c")
     monkeypatch.setattr(channels.urllib.request, "urlopen", fake_urlopen)
 

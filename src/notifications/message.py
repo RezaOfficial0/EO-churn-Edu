@@ -21,6 +21,10 @@ _ID_COLUMN = STUDENT_INFO[0]
 # the rest. Telegram caps a message at 4096 characters.
 MAX_DETAILED_STUDENTS = 10
 
+# Repeat students get one line each rather than a full block, so this cap can be
+# higher than the one above.
+MAX_REPEAT_LINES = 15
+
 
 def label_for(feature: str) -> str:
     """Turkish label for a feature, falling back to the raw column name."""
@@ -78,6 +82,60 @@ def _reason_lines(reasons, student_values: dict) -> list[str]:
     return lines
 
 
+def _trend(probability: float, previous: float | None) -> str:
+    """"↑ (önceki %58)" for one repeat student, or "" when there is nothing to compare.
+
+    Compared at whole-percent resolution, which is what the message shows: a move
+    from 0.5555 to 0.5556 is not a move a mentor should see an arrow for.
+    """
+    if previous is None:
+        return ""
+    now = round(float(probability) * 100)
+    before = round(float(previous) * 100)
+    arrow = "↑" if now > before else "↓" if now < before else "→"
+    return f"{arrow} (önceki %{before})"
+
+
+def _headline_reason(row, student_values: dict) -> str:
+    """The single reason shown next to a repeat student.
+
+    The strongest risk-INCREASING one, not simply the strongest: telling a mentor
+    that something is lowering the risk of a student who is still on the list
+    reads as reassurance, which is the opposite of the point.
+    """
+    reasons = parse_reasons(row)
+    if not reasons:
+        return ""
+    increasing = [reason for reason in reasons if reason.get("impact", 0) > 0]
+    feature = (increasing or reasons)[0].get("feature")
+    if feature is None:
+        return ""
+    return f"{label_for(feature)}: {format_value(feature, student_values.get(feature))}"
+
+
+def _repeat_rows(
+    still_at_risk: pd.DataFrame,
+    values: dict[str, dict],
+    previous_probabilities: dict[str, float],
+) -> tuple[list[tuple[str, str, str]], int]:
+    """(student_id, "%65 ↑ (önceki %58)", "reason") per shown repeat, plus the hidden count.
+
+    Split into parts rather than rendered here so the plain-text and HTML builders
+    can lay the same facts out differently.
+    """
+    shown = still_at_risk.head(MAX_REPEAT_LINES)
+    rows = []
+    for _, row in shown.iterrows():
+        student_id = str(row[_ID_COLUMN])
+        probability = float(row["churn_probability"])
+        headline = f"%{probability * 100:.0f}"
+        trend = _trend(probability, previous_probabilities.get(student_id))
+        if trend:
+            headline += f" {trend}"
+        rows.append((student_id, headline, _headline_reason(row, values.get(student_id, {}))))
+    return rows, len(still_at_risk) - len(shown)
+
+
 def _student_values(students: pd.DataFrame | None) -> dict[str, dict]:
     """{student_id: {feature: value}} for today's students, or {} if unavailable.
 
@@ -95,14 +153,20 @@ def build_message(
     *,
     still_at_risk: pd.DataFrame | None = None,
     students: pd.DataFrame | None = None,
+    previous_probabilities: dict[str, float] | None = None,
     run_at: datetime | None = None,
 ) -> tuple[str, str]:
     """Return (subject, body) as plain text.
 
     `new_alerts` are the students flagged for the first time this run - the ones
     a mentor should act on today. `still_at_risk` were already flagged in the
-    previous run; they are summarised in one line rather than repeated in full,
-    so a daily message does not become noise a week in.
+    previous run; they get one line each rather than a repeated full block, so a
+    daily message does not become noise a week in - but that line carries the
+    probability, which way it moved since the previous run, and the strongest
+    reason, because "same eight names again" is not something anyone acts on.
+
+    `previous_probabilities` ({student_id: probability} from the run before this
+    one) is what makes the movement visible; without it the line simply omits it.
     """
     run_at = run_at or datetime.now()
     values = _student_values(students)
@@ -134,11 +198,15 @@ def build_message(
             lines.append(f"\n... ve {new_count - len(shown)} öğrenci daha.")
 
     if repeat_count:
-        ids = ", ".join(
-            f"{row[_ID_COLUMN]} (%{float(row['churn_probability']) * 100:.0f})"
-            for _, row in still_at_risk.iterrows()
-        )
-        lines += ["", f"ÖNCEKİ KOŞUDA DA UYARI VERİLMİŞTİ ({repeat_count})", ids]
+        lines += ["", f"ÖNCEKİ KOŞUDA DA UYARI VERİLMİŞTİ ({repeat_count})"]
+        rows, hidden = _repeat_rows(still_at_risk, values, previous_probabilities or {})
+        for student_id, headline, reason in rows:
+            line = f"{student_id} — {headline}"
+            if reason:
+                line += f" · {reason}"
+            lines.append(line)
+        if hidden:
+            lines.append(f"... ve {hidden} öğrenci daha.")
 
     return subject, "\n".join(lines)
 
@@ -148,6 +216,7 @@ def build_html(
     *,
     still_at_risk: pd.DataFrame | None = None,
     students: pd.DataFrame | None = None,
+    previous_probabilities: dict[str, float] | None = None,
     run_at: datetime | None = None,
 ) -> str:
     """The same content as HTML, for the email channel.
@@ -197,14 +266,23 @@ def build_html(
             parts.append("</ul></div>")
 
     if repeat_count:
-        ids = ", ".join(
-            f"{escape(str(row[_ID_COLUMN]))} (%{float(row['churn_probability']) * 100:.0f})"
-            for _, row in still_at_risk.iterrows()
-        )
         parts.append(
             f'<h3 style="margin:24px 0 8px">Önceki koşuda da uyarı verilmişti ({repeat_count})</h3>'
-            f'<p style="color:#666;margin:0">{ids}</p>'
+            '<ul style="margin:0;padding-left:18px;color:#444">'
         )
+        rows, hidden = _repeat_rows(still_at_risk, values, previous_probabilities or {})
+        for student_id, headline, reason in rows:
+            item = (
+                f'<strong>{escape(student_id)}</strong> — {escape(headline)}'
+            )
+            if reason:
+                item += f' &middot; {escape(reason)}'
+            parts.append(f"<li>{item}</li>")
+        parts.append("</ul>")
+        if hidden:
+            parts.append(
+                f'<p style="color:#666;margin:6px 0 0">... ve {hidden} öğrenci daha.</p>'
+            )
 
     parts.append("</div>")
     return "".join(parts)

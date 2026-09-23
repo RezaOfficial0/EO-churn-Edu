@@ -332,3 +332,48 @@ def latest_run_alerts(alerts_path=DAILY_ALERTS_PATH, *, source: str | None = Non
     if _resolve(source) == "db":
         return latest_run_alerts_db()
     return latest_run_alerts_csv(alerts_path)
+
+
+# --- Alert-log reads: the run BEFORE the latest one (dual-mode) --------------
+# Used by the alert message to say which way a repeat student is moving. A
+# student who has been on the list for a week is far more urgent at 65% and
+# rising than at 27% and flat, and the id alone does not say which.
+def previous_run_probabilities_csv(alerts_path=DAILY_ALERTS_PATH) -> dict[str, float]:
+    """{student_id: churn_probability} for the run before the most recent one."""
+    path = Path(alerts_path)
+    if not path.exists():
+        return {}
+    log = pd.read_csv(path)
+    if log.empty or "run_at" not in log.columns:
+        return {}
+    runs = sorted(log["run_at"].unique())
+    if len(runs) < 2:
+        return {}
+    previous = log[log["run_at"] == runs[-2]]
+    return {
+        str(row[_ID_COLUMN]): float(row["churn_probability"])
+        for _, row in previous.iterrows()
+    }
+
+
+def previous_run_probabilities_db() -> dict[str, float]:
+    df = pd.read_sql(
+        _sql(
+            "SELECT student_id, churn_probability FROM alerts "
+            "WHERE run_at = (SELECT max(run_at) FROM alerts "
+            "                WHERE run_at < (SELECT max(run_at) FROM alerts))"
+        ),
+        _get_engine(),
+    )
+    return {
+        str(row[_ID_COLUMN]): float(row["churn_probability"]) for _, row in df.iterrows()
+    }
+
+
+def previous_run_probabilities(
+    alerts_path=DAILY_ALERTS_PATH, *, source: str | None = None
+) -> dict[str, float]:
+    """Empty when there is no earlier run - the message then omits the trend."""
+    if _resolve(source) == "db":
+        return previous_run_probabilities_db()
+    return previous_run_probabilities_csv(alerts_path)

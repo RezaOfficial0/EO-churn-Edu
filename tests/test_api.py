@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from api.main import app
 from config import API_KEY, DAILY_DATA_PATH, FEATURE_BOUNDS, FEATURES, CAT_COLS
+from src.data.features import add_monthly_value
 
 
 @pytest.fixture(scope="module")
@@ -25,8 +26,12 @@ def test_missing_api_key_is_rejected():
 
 
 def _valid_predict_body() -> dict:
-    """A raw student row that satisfies every FEATURE_BOUNDS constraint."""
-    row = pd.read_csv(DAILY_DATA_PATH).iloc[0]
+    """A raw student row that satisfies every FEATURE_BOUNDS constraint.
+
+    Run through add_monthly_value first: POST /predict takes MODEL features, and
+    the derived ones are not in the raw file.
+    """
+    row = add_monthly_value(pd.read_csv(DAILY_DATA_PATH)).iloc[0]
     body = {}
     for feature in FEATURES:
         if feature in CAT_COLS:
@@ -53,7 +58,7 @@ def test_predict_happy_path(client):
 
 def test_predict_rejects_out_of_range_value(client):
     body = _valid_predict_body()
-    body["monthly_fee_try"] = 1e18
+    body["monthly_value_try"] = 1e18
     assert client.post("/predict", json=body).status_code == 422
 
 

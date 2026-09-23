@@ -42,6 +42,49 @@ def test_previous_at_risk_ids_reads_only_the_last_run(tmp_path):
     assert loader.previous_at_risk_ids(alerts_path) == {"RECENT"}
 
 
+def test_previous_run_probabilities_is_empty_without_a_log(tmp_path):
+    assert loader.previous_run_probabilities(tmp_path / "nope.csv") == {}
+
+
+def test_previous_run_probabilities_is_empty_with_only_one_run(tmp_path):
+    """Nothing to compare against - the message then shows no arrow."""
+    alerts_path = tmp_path / "alerts.csv"
+    pd.DataFrame(
+        {
+            "run_at": ["2026-01-02T00:00:00Z"],
+            "run_date": ["2026-01-02"],
+            "student_id": ["ONLY"],
+            "churn_probability": [0.5],
+            "status": ["new"],
+            "top_reasons": ["a"],
+        }
+    ).to_csv(alerts_path, index=False)
+
+    assert loader.previous_run_probabilities(alerts_path) == {}
+
+
+def test_previous_run_probabilities_reads_the_second_newest_run(tmp_path):
+    alerts_path = tmp_path / "alerts.csv"
+    pd.DataFrame(
+        {
+            "run_at": [
+                "2026-01-01T00:00:00Z",
+                "2026-01-02T00:00:00Z",
+                "2026-01-02T00:00:00Z",
+                "2026-01-03T00:00:00Z",
+            ],
+            "run_date": ["2026-01-01", "2026-01-02", "2026-01-02", "2026-01-03"],
+            "student_id": ["OLDEST", "A", "B", "A"],
+            "churn_probability": [0.1, 0.42, 0.33, 0.56],
+            "status": ["new", "new", "new", "still_at_risk"],
+            "top_reasons": ["a", "b", "c", "d"],
+        }
+    ).to_csv(alerts_path, index=False)
+
+    # The run before the latest one - not the latest, and not every run ever.
+    assert loader.previous_run_probabilities(alerts_path) == {"A": 0.42, "B": 0.33}
+
+
 def test_append_to_alert_log_csv_keeps_the_column_layout(tmp_path):
     alerts_path = tmp_path / "alerts.csv"
     at_risk = pd.DataFrame(

@@ -31,7 +31,20 @@ def logistic_regression_baseline(X_train, y_train, X_test, y_test):
 
 
 def single_rule_baseline(X_test, y_test, column="days_since_last_contact"):
-    """Rank students by one column, no model at all."""
+    """Rank students by one column, no model at all.
+
+    The column is a default, not a requirement. FEATURES is edited per client and
+    this one may not survive that edit - a diagnostic baseline must never be the
+    reason a training run dies, so a missing column is reported and skipped.
+    """
+    if column not in X_test.columns:
+        return {
+            "column": None,
+            "roc_auc": None,
+            "average_precision": None,
+            "skipped": f"{column!r} is not in FEATURES",
+        }
+
     score = np.asarray(X_test[column], dtype=float)
     return {
         "column": column,
