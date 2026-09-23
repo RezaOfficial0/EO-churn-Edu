@@ -60,7 +60,7 @@ def test_env_secret_unset_is_none(monkeypatch):
 # --- 2. token shape checked before it becomes a URL ----------------------------
 @pytest.mark.parametrize(
     "bad_token",
-    [f"{REAL_LOOKING_TOKEN}\n", f"{REAL_LOOKING_TOKEN} ", "not-a-token", "12345"],
+    [f"{REAL_LOOKING_TOKEN}\n", f"{REAL_LOOKING_TOKEN} ", "not-a-token", "8123456789"],
 )
 def test_malformed_token_is_rejected_without_echoing_it(monkeypatch, bad_token):
     monkeypatch.setattr(channels, "TELEGRAM_BOT_TOKEN", bad_token)
