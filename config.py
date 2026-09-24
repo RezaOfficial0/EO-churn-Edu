@@ -435,6 +435,59 @@ SMTP_STARTTLS = os.environ.get("SMTP_STARTTLS", "true").lower() not in {"false",
 ALERT_WEBHOOK_URL = os.environ.get("ALERT_WEBHOOK_URL") or None
 
 
+# --- Scheduler and operator alerting (B-14) ---------------------------------
+# The daily run used to be a cron line the customer had to add by hand; it is now
+# `scripts/scheduler.py` in its own compose service. See src/scheduling.py for the
+# parsing and the next-run computation, and README "Zamanlama".
+
+# Local time of day the run is due, and the zone that "local" means. The zone is
+# part of the contract, not a detail: the container's clock is UTC, so 09:00
+# without a zone would reach a mentor in Istanbul at noon.
+RUN_AT = os.environ.get("RUN_AT", "").strip() or "09:00"
+SCHEDULER_TIMEZONE = (
+    os.environ.get("SCHEDULER_TIMEZONE", "").strip() or "Europe/Istanbul"
+)
+
+# Which weekdays the run is due on (Mon=1 .. Sun=7); empty means every day.
+# "1-5" reproduces the weekday-only cron line this service replaced - raise
+# SCHEDULER_HEARTBEAT_HOURS with it, or Monday morning looks like an outage.
+RUN_DAYS = os.environ.get("RUN_DAYS", "").strip()
+
+# No successful run in this many hours -> an alert to the OPS channel. This is the
+# one check that catches "the whole thing has been dead for three days", which is
+# invisible by construction otherwise: a silent system and a healthy one that
+# happens to have nobody at risk look identical from outside.
+# `... or "24"`, not a get() default: a variable PRESENT BUT EMPTY in .env (which is
+# how every template ships an optional setting) would otherwise be float("") -> a
+# ValueError at import time, in every process that imports config.
+SCHEDULER_HEARTBEAT_HOURS = float(
+    os.environ.get("SCHEDULER_HEARTBEAT_HOURS", "").strip() or "26"
+)
+
+# A single step (the pipeline, or the alert send) may not take longer than this.
+# Without a timeout one hung subprocess - a Postgres connection that never answers
+# is the realistic one - would make the scheduler sleep forever and look alive:
+# no run, no failure, no alert. On a timeout the step is killed and reported.
+SCHEDULER_RUN_TIMEOUT_SECONDS = float(
+    os.environ.get("SCHEDULER_RUN_TIMEOUT_SECONDS", "").strip() or "3600"
+)
+
+# Where the last-success / last-failure record lives. A file, because the schema
+# has no table that may hold it (the `runs` table is B-04) - see src/scheduling.py.
+# In compose this path is a named volume, so it survives a restart and a rebuild.
+SCHEDULER_STATE_PATH = os.environ.get("SCHEDULER_STATE_PATH", "").strip() or str(
+    BASE_DIR / "state" / "scheduler_state.json"
+)
+
+# --- Operator (ops) alert channel -------------------------------------------
+# Deliberately SEPARATE from NOTIFY_CHANNELS above. A failed run is our problem
+# and must not appear in the customer's group: "pipeline crashed with KeyError" is
+# not a message a mentor can act on, and it is exactly the message that destroys
+# confidence in the product. Same bot, different chat.
+OPS_TELEGRAM_CHAT_ID = _env_secret("OPS_TELEGRAM_CHAT_ID") or None
+OPS_ALERT_WEBHOOK_URL = _env_secret("OPS_ALERT_WEBHOOK_URL") or None
+
+
 
 
 #LLM______________________________________________________-

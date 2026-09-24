@@ -9,6 +9,7 @@ catboost_info
 tests
 .github
 data/daily_alerts.csv
+state
 
 # Sırlar imaja girmesin. Ayarlar compose'a env_file ile veriliyor; imajın içine
 # kopyalanırsa parola ve bot token'ı imajı alan herkeste olur.

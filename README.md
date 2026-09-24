@@ -8,9 +8,10 @@ reach out before the student is gone.
 |---|---|
 | **Model** | CatBoost classifier, calibrated with Platt scaling (logistic / "sigmoid") so `churn_probability` is a real probability, not a ranking score |
 | **Explanations** | top-N SHAP contributions per student, in plain Turkish |
-| **Serving** | FastAPI — single prediction, lookup by `student_id`, read-only listing. The daily batch run is a scheduled command, not an endpoint |
+| **Serving** | FastAPI — single prediction, lookup by `student_id`, read-only listing. The daily batch run is a scheduled command, not an endpoint — a compose service runs it |
 | **Storage** | CSV files or PostgreSQL, switched by one environment variable |
-| **Delivery** | Telegram, email (SMTP), or webhook |
+| **Delivery** | Telegram, email (SMTP), or webhook — with a separate operator channel for when a run fails |
+| **Schedule** | a compose service runs the daily chain at `RUN_AT` and alerts us if a day goes by without a successful run |
 
 > **The numbers in this repo come from a synthetic dataset.** They demonstrate
 > that the *system* works; they say nothing about how well churn can actually be
@@ -86,6 +87,7 @@ again is safe.
 | `db` | postgres:18-alpine, data kept in the `pgdata` volume |
 | `init` | schema + migrations, daily data, one pipeline run — then exits |
 | `api` | uvicorn, starts only after `init` has succeeded |
+| `scheduler` | the daily run on a timer: pipeline `&&` alerts at `RUN_AT`, plus the heartbeat. Same image as `api`. See [Zamanlama](#zamanlama) |
 | `dashboard` | the React app built and served by nginx (separate compose file) |
 
 `init` exists so that `up` alone produces a working demo. `api` waits for it via
@@ -115,13 +117,17 @@ the compose network. Both carry secrets and neither is committed — the
 | Variable | Why you would change it |
 |---|---|
 | `DB_PORT` | a local Postgres already holds 5432 — set `5433` |
-| `API_PORT` | something else holds 8000. **Change `VITE_API_BASE` to match** |
-| `DASHBOARD_PORT` | something else holds 5173. **Change `ALLOWED_ORIGINS` to match**, or every request fails CORS |
-| `VITE_API_BASE` | the address the *browser* uses to reach the API. Baked in at **build** time, so change it and rebuild with `--build`. Must match `API_PORT`, and must never be `http://api:8000` — that name only resolves inside the compose network |
-| `ALLOWED_ORIGINS` | CORS allow-list; must contain the dashboard's real origin |
+| `API_PORT` | something else holds 8000. Only the host-side publish; the dashboard no longer cares (D-09) |
+| `DASHBOARD_PORT` | something else holds 5173 |
+| `VITE_API_BASE` | the base the *browser* uses. `/api` — same origin, proxied by the dashboard's own nginx. Still baked in at **build** time, so change it and rebuild with `--build`, but it no longer has to track `API_PORT` |
+| `API_UPSTREAM` | where the dashboard's proxy finds the API. `http://api:8000` — the compose service name, correct here precisely because nginx runs in the container and not in the browser |
+| `ALLOWED_ORIGINS` | CORS allow-list. The dashboard is same-origin now, so this only matters for a browser client served from somewhere else |
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | the template ships `postgres` / `eochurn` — **a demo password, change it for anything that is not your own laptop** |
-| `API_KEY` | empty in the template. The API then **refuses to start** unless `EOAI_ALLOW_NO_AUTH=1` is also set, which the template does for the local demo — and which is only honest because compose publishes the API port on `127.0.0.1` only. Reaching it from another machine means setting a real key |
+| `API_KEY` | empty in the template. The API then **refuses to start** unless `EOAI_ALLOW_NO_AUTH=1` is also set, which the template does for the local demo — and which is only honest because compose publishes the API port on `127.0.0.1` only. Reaching it from another machine means setting a real key. This one value drives **both ends**: the API requires it and the dashboard's nginx injects it, so setting it needs no dashboard change and the key never reaches a browser |
 | `NOTIFY_CHANNELS` | empty prints to stdout only; `telegram` actually sends |
+| `RUN_AT`, `SCHEDULER_TIMEZONE`, `RUN_DAYS` | when the daily run happens (default 09:00 Europe/Istanbul, every day) — [Zamanlama](#zamanlama) |
+| `OPS_TELEGRAM_CHAT_ID`, `OPS_ALERT_WEBHOOK_URL` | where a **failed** run is reported. Ours, not the customer's channel. Empty means the failure is only in the log and in `docker compose ps` |
+| `SCHEDULER_HEARTBEAT_HOURS` | no successful run in this many hours → an ops alert (default 26) |
 
 Values containing spaces must be quoted (`NOTIFY_TITLE="EO-Churn — Risk"`).
 Compose parses the file itself via `--env-file`, and `demo_up.sh` /
@@ -129,13 +135,27 @@ Compose parses the file itself via `--env-file`, and `demo_up.sh` /
 the file as shell — so a stray space cannot be executed as a command. Quote
 anyway; anything else that reads the file may not be as careful.
 
-So changing the API port is two edits plus a rebuild:
+Changing the API port is now a single edit — `VITE_API_BASE` is a path, so it no
+longer has to follow:
 
 ```bash
-sed -i '' 's|^API_PORT=.*|API_PORT=8010|'                   .env.docker
-sed -i '' 's|^VITE_API_BASE=.*|VITE_API_BASE=http://localhost:8010|' .env.docker
+sed -i '' 's|^API_PORT=.*|API_PORT=8010|' .env.docker
 ./scripts/demo_up.sh
 ```
+
+### Turning the API key on
+
+```bash
+sed -i '' 's|^API_KEY=.*|API_KEY=<a long random string>|' .env.docker
+sed -i '' '/^EOAI_ALLOW_NO_AUTH=/d'                        .env.docker
+./scripts/demo_up.sh
+```
+
+That is the whole change. The API starts requiring `X-API-Key`; compose passes the
+same `API_KEY` into the dashboard container, where nginx adds the header to every
+proxied request (D-09). The key is a **runtime** variable of that container, so it
+is in neither the dashboard bundle nor the image history, and the browser never
+holds it. The dashboard build itself does not change.
 
 ### Before a demo
 
@@ -209,8 +229,10 @@ a dump first unless you are certain the data is disposable.
 |---|---|
 | `docker version` hangs after the Client block | Docker Desktop's engine is not running — restart Docker Desktop |
 | `bind: address already in use` | port taken; change `DB_PORT` / `API_PORT` / `DASHBOARD_PORT` |
-| dashboard loads but the list is empty | one of three: `VITE_API_BASE` does not match `API_PORT` (fix and rebuild with `--build`); `GET /metrics` failed, so the dashboard has no threshold and deliberately renders nothing; or `API_KEY` is set and the dashboard cannot send it |
-| dashboard says "API'ye ulaşılamıyor" while `curl` works | the browser origin is not in `ALLOWED_ORIGINS`. A CORS rejection is indistinguishable from a dead server in the browser |
+| dashboard loads but the list is empty | `GET /metrics` failed, so the dashboard has no threshold and deliberately renders nothing. Check `docker compose logs api` |
+| dashboard shows 401 "missing or invalid X-API-Key" | the proxy's `API_KEY` and the API's `API_KEY` disagree — both come from `.env.docker`, so this usually means the dashboard container was not recreated after the file changed (`up -d` again) |
+| dashboard says "API'ye ulaşılamıyor" while `curl` works | the dashboard's nginx cannot reach `API_UPSTREAM`. It resolves that hostname when it loads its config, so an API container replaced with a new IP needs `docker compose restart dashboard` |
+| dashboard shows an orange "Yapılandırma hatası" banner | it was built without `VITE_API_BASE`, or with an absolute `http://` address while the page is served over HTTPS. Rebuild with `--build-arg VITE_API_BASE=/api` |
 | `db` restarts in a loop, log mentions "unused mount/volume" | a `pgdata` volume created by an older config — `down -v` and start again (Postgres 18+ wants the mount at `/var/lib/postgresql`, not `/var/lib/postgresql/data`) |
 | `demo_up.sh` times out | `docker compose --env-file .env.docker logs init api` |
 
@@ -265,6 +287,10 @@ and see what the recipe produced.
 | `python scripts/send_daily_alerts.py --channels telegram` | override `NOTIFY_CHANNELS` for one run |
 | `python scripts/send_daily_alerts.py --force` | send even with no run, or a stale one |
 | `python scripts/send_daily_alerts.py --max-age-hours 12` | tighten the staleness limit (default 24) |
+| `python scripts/scheduler.py` | the scheduler loop — pipeline `&&` alerts at `RUN_AT`, every day (what the compose `scheduler` service runs) |
+| `python scripts/scheduler.py --once` | run the chain now and exit; non-zero if it failed |
+| `python scripts/scheduler.py --next 5` | print the next 5 due times, run nothing |
+| `python scripts/scheduler.py --healthcheck` | non-zero if the last run failed or none succeeded inside the heartbeat window |
 
 ### Notification setup
 
@@ -301,6 +327,7 @@ and see what the recipe produced.
 | `./scripts/demo_message.sh` | print the daily alert message without sending it |
 | `docker compose --env-file .env.docker ps` | what is running |
 | `docker compose --env-file .env.docker logs -f api` | follow the API log |
+| `docker compose --env-file .env.docker logs -f scheduler` | follow the daily run / heartbeat log |
 | `docker compose --env-file .env.docker down` | stop, keep the data |
 | `docker compose --env-file .env.docker down -v` | stop and wipe the database |
 
@@ -385,6 +412,8 @@ src/
   data/preprocess.py          select FEATURES, cast categoricals, train/val/test split
   serialization.py            to_external(): the one conversion every API response goes through
   logging_setup.py            one-time logging configuration + the per-request id
+  scheduling.py               WHEN the daily run is due (pure: RUN_AT + tz + RUN_DAYS ->
+                              the next instant) and the last-success/failure state file
   model/model.py              build the CatBoost classifier
   model/train.py              fit with early stopping on the validation set
   model/calibrate.py          Platt (sigmoid) and isotonic calibrators; sigmoid is the one in use
@@ -398,6 +427,8 @@ src/
     message.py                alert rows -> Turkish message (plain text + HTML)
     channels.py               Telegram, SMTP email, webhook
     notify.py                 pick the configured channels, survive one failing
+    ops.py                    the OPERATOR channel: a failed run goes to us, not to
+                              the customer's group (OPS_TELEGRAM_CHAT_ID / webhook)
 
 pipeline/
   training_pipeline.py        the training flow above
@@ -410,6 +441,8 @@ scripts/
   init_db.py                  run pending db/migrations/, tracked (no psql needed)
   load_daily_students.py      CSV -> the daily_students table
   send_daily_alerts.py        deliver today's alert to Telegram / email / webhook
+  scheduler.py                the daily run on a timer: pipeline && alerts at RUN_AT,
+                              plus the heartbeat (the compose `scheduler` service)
   telegram_setup.py           find the chat id for .env, prove the bot can reach it
   verify_backend.py           run the whole chain end to end and report what works
   test_api.py                 live smoke test (needs a running server; read-only by default)
@@ -421,12 +454,16 @@ scripts/
 
 tests/                        pytest suite (the 9 database tests skip without TEST_DATABASE_URL)
 
+state/                        scheduler state: last successful / failed run (gitignored;
+                              a named volume in compose, see Zamanlama)
+
 metrics/                      per-run training metrics (gitignored, regenerated)
 saved_models/                 the served model, calibrator and model_meta.json (committed)
 
 Dockerfile                    the API image
-docker-compose.yml            db + init + api
-docker-compose.dashboard.yml  the dashboard service (needs the sibling repo)
+docker-compose.yml            db + init + api + scheduler
+docker-compose.dashboard.yml  the dashboard service (needs the sibling repo); also
+                              wires its /api reverse proxy to this API
 .github/workflows/ci.yml      CI: compileall + pytest (no Postgres, so DB tests skip)
 
 RnD/                          EXPERIMENTAL, UNSUPPORTED. Not imported by anything,
@@ -480,10 +517,10 @@ is optional and documented there):
 |---|---|
 | `DATA_SOURCE` | `csv` (default) or `db` |
 | `DATABASE_URL` | Postgres connection string, required for `db` |
-| `API_KEY` | shared secret for the `X-API-Key` header; unset means the API refuses to start |
+| `API_KEY` | shared secret for the `X-API-Key` header; unset means the API refuses to start. The dashboard container reads the same variable and injects the header server-side |
 | `API_BIND_HOST` | the address the API is reachable on; unset is treated as public |
 | `EOAI_ALLOW_NO_AUTH` | `1` starts without a key on a loopback `API_BIND_HOST` (local development only) |
-| `ALLOWED_ORIGINS` | CORS origins allowed to call the API |
+| `ALLOWED_ORIGINS` | CORS origins allowed to call the API; not needed by the same-origin dashboard |
 | `NOTIFY_CHANNELS` | `telegram`, `email`, `webhook` — comma-separated, empty = print only |
 | `NOTIFY_TITLE` | heading at the top of every alert message |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram delivery |
@@ -597,22 +634,136 @@ threshold, explains them with SHAP, marks each `new` or `still_at_risk` against 
 previous run, and appends the run to the alert log. The second reads that log and
 delivers it to a person.
 
-On a schedule:
-
-```cron
-# 09:00 every weekday
-0 9 * * 1-5  cd /path/to/EO-churn && .venv/bin/python -m pipeline.daily_pipeline && .venv/bin/python scripts/send_daily_alerts.py
-```
-
 Two commands joined with `&&`, deliberately: no alert goes out if the run failed. A
 pipeline that silently scored nothing must not produce a cheerful "bugün risk
 altında öğrenci yok" message.
+
+On a schedule: nothing to add by hand — see [Zamanlama](#zamanlama) below. The
+`scheduler` service runs exactly these two commands, in this order, with that same
+`&&`.
 
 `status` is defined against the **previous recorded run**, which is why the run is a
 scheduled command and not an endpoint: anything that could trigger it over HTTP —
 a double-clicked dashboard button included — would create a new "previous run" and
 mark every student `still_at_risk`. `POST /run-daily-pipeline` was removed for that
 reason (B-08). Use `GET /students` for display.
+
+---
+
+## Zamanlama
+
+Günlük koşuyu `docker-compose.yml` içindeki **`scheduler`** servisi çalıştırıyor.
+Elle cron satırı eklemek yok; eski README'deki crontab örneği bu servisle
+değiştirildi (B-14).
+
+```bash
+docker compose --env-file .env.docker up -d            # scheduler dahil
+docker compose --env-file .env.docker logs -f scheduler
+docker compose --env-file .env.docker ps               # (healthy) / (unhealthy)
+```
+
+Servis `api` ile **aynı imajı** kullanıyor (aynı model dosyaları, aynı `config.py`)
+ama ayrı bir container: API'nin restart'ı koşuyu kaçırtmıyor, koşunun CPU'su
+isteklere yansımıyor. Veritabanına ve modele **doğrudan** gidiyor, HTTP'ye hiç
+dokunmuyor — yani `API_KEY` / `EOAI_ALLOW_NO_AUTH` (B-07) bu servisi
+ilgilendirmiyor.
+
+### Ayarlar
+
+| Değişken | Ne işe yarar |
+|---|---|
+| `RUN_AT` | koşu saati, `HH:MM` (varsayılan `09:00`). Anlamsız bir değer servisi **başlatmıyor** — kendi kafasına göre bir saat seçmesindense çıkması iyidir |
+| `SCHEDULER_TIMEZONE` | saatin hangi dilimde okunacağı (varsayılan `Europe/Istanbul`). Container'ın saati UTC olduğu için bu satır şart: dilimsiz `09:00`, mentora öğlen ulaşır |
+| `RUN_DAYS` | günler, `Pzt=1 .. Paz=7`. Boş = her gün. Sadece hafta içi: `1-5` |
+| `SCHEDULER_HEARTBEAT_HOURS` | bu kadar saattir başarılı koşu yoksa **bize** uyarı (varsayılan 26) |
+| `SCHEDULER_RUN_TIMEOUT_SECONDS` | tek bir adımın üst süre sınırı (varsayılan 3600). Asılı kalan bir bağlantı, "ayakta ama hiçbir şey yapmıyor" hâlini üretir; timeout onu arızaya çeviriyor |
+| `SCHEDULER_STATE_PATH` | son başarılı/başarısız koşu kaydı. Compose'da `scheduler_state` volume'u |
+| `OPS_TELEGRAM_CHAT_ID` | arıza mesajının gideceği **bizim** sohbetimiz (aynı bot, farklı sohbet) |
+| `OPS_ALERT_WEBHOOK_URL` | ya da bizim Slack/Discord webhook'umuz |
+
+`RUN_DAYS=1-5` kullanıyorsan `SCHEDULER_HEARTBEAT_HOURS`'u ~74'e çek: cuma
+koşusundan pazartesiye 72 saat var ve 24 saatlik pencere her pazartesi sabahı
+arıza gibi görünür. Varsayılanın 26 saat olmasının sebebi de bu ailedendir: tam
+24 saatlik pencere, 09:00'dan 09:00'a hiç pay bırakmıyor ve servisi 09:00'ı
+geçtikten sonra yeniden başlattığın her seferde ilk sabah yanlış bir uyarı
+üretirdi.
+
+Saati kontrol etmenin en hızlı yolu — hiçbir şey çalıştırmadan sonraki koşuları
+yazdırır:
+
+```bash
+docker compose --env-file .env.docker exec scheduler python scripts/scheduler.py --next 5
+```
+
+### Nasıl çalışıyor
+
+`scripts/scheduler.py` sonraki koşu anını hesaplayıp o ana kadar **uyuyor**, sonra
+zinciri çalıştırıyor. Cron yerine uyuyan bir döngü, çünkü: bütün zamanlama
+`.env`'de üç değişken (ikinci bir crontab/ofelia yapılandırma dili yok), hesap tek
+bir saf fonksiyon (`src/scheduling.py: next_run_at`) ve bu yüzden DST dahil
+**test edilebilir** — 09:00'ı beklemeden. Container içindeki cron ise sessizdir:
+kendi ortamı vardır, hatayı hiçbir yere postalamaz, yazım hatası olan satır hiç
+ateşlenmez.
+
+Uyuyan döngünün dürüst bedeli: container kapalıyken gelen saat **kaçar**. Makine
+09:00'da kapalıysa, 09:15'te açıldığında koşu yapılmaz — yarının saati
+hesaplanır. Yakalayan şey heartbeat'tir.
+
+DST: koşu saati yerel duvar saatidir. Saatin geri alındığı gün aynı saat iki kez
+yaşanır; ilk olanı seçiliyor, yani koşu **bir kez** yapılıyor. İleri alındığı gün
+o saat hiç yaşanmıyorsa koşu o gün gerçek bir ana denk getirilip yine yapılıyor.
+(Türkiye 2016'dan beri sabit UTC+3, yani varsayılan kurulumda bunların ikisi de
+olmuyor — başka bir dilime geçince oluyor.)
+
+### Koşu başarısız olursa
+
+Zincir `&&` ile bağlı: `daily_pipeline` sıfır dönmezse `send_daily_alerts.py`
+**hiç başlamıyor**. Müşteri yarım ya da yanıltıcı bir mesaj almıyor — "bugün risk
+altında öğrenci yok" ile "koşu hiç olmadı" aynı şey değil ve ikincisi bir öğrenciye
+mal olur.
+
+Sırayla:
+
+1. sonuç durum dosyasına yazılıyor (`last_failure_at`, hangi adım, çıktının sonu);
+2. container log'una **büyük harflerle** düşüyor — ops kanalı olmasa bile;
+3. `OPS_TELEGRAM_CHAT_ID` / `OPS_ALERT_WEBHOOK_URL` varsa **bize** mesaj gidiyor.
+   Müşterinin kanalına değil: `NOTIFY_CHANNELS` ile hiç ilgisi yok. "KeyError in
+   daily_pipeline" bir mentorun yapabileceği bir şey değil, ama ürüne olan güveni
+   bitirecek türden bir mesajdır;
+4. servis kendini **unhealthy** ilan ediyor, yani `docker compose ps` çıktısında
+   görünüyor. Hiçbir ops kanalı ayarlı değilse arızayı görünür kılan tek şey bu
+   satır ve log'dur — pilot öncesi en az birini ayarla, kimse log izlemiyor.
+
+Hata mesajı `redact()`'ten geçiyor: bot token'ı, webhook adresi ya da bağlantı
+dizesi ne log'a ne de Telegram'a düşüyor.
+
+### Heartbeat
+
+`SCHEDULER_HEARTBEAT_HOURS` (varsayılan 26) saattir **başarılı** koşu yoksa ops
+kanalına uyarı gidiyor ve servis unhealthy oluyor. Bu, ürünün doğası gereği
+görünmez olan tek arızayı yakalıyor: sistem üç gündür ölü olsa da, risk altında
+kimsenin olmadığı sağlıklı bir gün gibi görünür. Kontrol açılışta da yapılıyor —
+iki gün kapalı kalmış bir container bunu yarın 09:00'da değil, açılır açılmaz
+söylüyor. Aynı pencere içinde uyarı tekrarlanmıyor, yoksa restart döngüsü her
+yeniden başlayışta bir mesaj atar.
+
+Son başarılı koşunun zamanı **`scheduler_state` volume'undaki küçük bir JSON
+dosyasında** tutuluyor (`SCHEDULER_STATE_PATH`, imaj içinde `/app/state`).
+Neden tabloda değil: şemada yalnızca `daily_students` ve `alerts` var; `alerts`
+müşteriye ait, yalnızca eklenen bir geçmiş ve "koşu oldu" diyen uydurma bir satır
+hem o geçmişi hem de `new` / `still_at_risk` karşılaştırmasını bozar. Bu kaydın
+asıl yeri `runs` tablosu ve o **B-04**'ün işi. Volume adlandırılmış olduğu için
+`up --build` ve restart dosyayı korur; `down -v` siler (o da veritabanıyla birlikte,
+tutarlı).
+
+### Elle çalıştırmak
+
+| Komut | Ne yapar |
+|---|---|
+| `python scripts/scheduler.py` | döngü: sırası gelince zinciri çalıştırır (compose'un çalıştırdığı) |
+| `python scripts/scheduler.py --once` | zinciri **şimdi** çalıştırır ve çıkar; başarısızsa 1 döner |
+| `python scripts/scheduler.py --next 5` | sonraki 5 koşu anını yazar, hiçbir şey çalıştırmaz |
+| `python scripts/scheduler.py --healthcheck` | son koşu başarısız ya da eskiyse 1 döner (compose healthcheck'i budur) |
 
 ---
 
@@ -655,6 +806,15 @@ message.
 | `email` | `SMTP_HOST`, `SMTP_TO`, and one of `SMTP_FROM` / `SMTP_USER`. `SMTP_PASSWORD` only when the server wants a login — Gmail needs an App Password, not your login password |
 | `webhook` | `ALERT_WEBHOOK_URL` |
 
+### The operator channel is not the customer channel
+
+Everything above delivers the **customer's** daily message. A **failed run** goes
+somewhere else entirely — `OPS_TELEGRAM_CHAT_ID` (same bot, our chat) or
+`OPS_ALERT_WEBHOOK_URL`, handled by `src/notifications/ops.py` and never by
+`NOTIFY_CHANNELS`. A mentor cannot act on "KeyError in daily_pipeline", and it is
+exactly the kind of message that ends their confidence in the product. See
+[Koşu başarısız olursa](#koşu-başarısız-olursa).
+
 ### Telegram setup
 
 ```bash
@@ -687,7 +847,7 @@ scheduler can tell.
 
 - the alert log has **no runs at all** — "no students at risk today" and "the
   pipeline never ran" are completely different facts, and only one is good news;
-- the most recent run is **older than `--max-age-hours`** (default 24) — if the
+- the most recent run is **older than `--max-age-hours`** (default 26) — if the
   09:00 job failed, yesterday's alerts must not go out looking like today's.
 
 Both exit 1 with an explanation; `--force` overrides either.
@@ -716,6 +876,13 @@ Every endpoint except `/health` requires the `X-API-Key` header — including `/
 `/redoc` and `/openapi.json`. Without `API_KEY` the API does not start at all; the
 only exception is `EOAI_ALLOW_NO_AUTH=1` with a loopback `API_BIND_HOST`, for local
 development.
+
+A browser must not hold that key. The dashboard therefore calls its **own** origin
+(`/api/...`) and the nginx that serves it proxies to this API, adding the header
+server-side from a runtime environment variable — so the key is in no bundle, the
+dashboard needs no cross-origin permission, and the API port does not have to be
+published for it to work. See "Reaching the API from a browser" in
+**`API_CONTRACT.md`**.
 
 Nothing on this list writes. The day's run — the one operation that records a run
 and therefore defines tomorrow's `new` / `still_at_risk` — is
@@ -989,22 +1156,32 @@ Reducing 5–7 to `STUDENT_INFO`-driven SQL is the single change that would make
   capacity (a false alarm costs a fixed 1 unit however many you generate). Both
   cannot be right. In practice mentors work the top of the list, which makes
   `precision@20 = 0.75` the number that describes the real workflow.
-- **No scheduler.** The daily run is a cron line you have to add; nothing in the
-  repo runs itself yet.
-- **Turning authentication on breaks the dashboard.** Auth itself is now
-  fail-closed: without `API_KEY` the API refuses to start, and the only way around
-  that is `EOAI_ALLOW_NO_AUTH=1` on a loopback address. But the dashboard still has
-  no way to send `X-API-Key`, so setting a real key leaves the UI showing only
-  errors. Auth is all-or-nothing; a reverse proxy that injects the header
-  server-side is the way out.
-- **The dashboard still calls `POST /run-daily-pipeline`.** The endpoint was
-  removed (B-08) — the day's run belongs to the scheduler — but the dashboard is a
-  separate repo and its `src/api.js` has not been updated, so its "run" button now
-  gets a `404`.
+- **The scheduler misses a window it was asleep for.** The daily run now runs
+  itself (the `scheduler` compose service, B-14), but it sleeps until the next
+  `RUN_AT`: if the machine is off at 09:00 the run does not happen at 09:15 when it
+  comes back, tomorrow's time is computed instead. The heartbeat makes that loud
+  rather than silent, which is the trade this design accepts on purpose — a catch-up
+  run at an arbitrary hour would redefine `new` / `still_at_risk` at that hour.
+- **Authentication is all-or-nothing, and the proxy is the only client that has a
+  key.** Auth is fail-closed (no `API_KEY`, no start, unless
+  `EOAI_ALLOW_NO_AUTH=1` on a loopback address) and the dashboard now works with a
+  key set, because its nginx injects the header server-side (D-09). What is still
+  missing is anything finer: one shared secret, no per-user identity, no rotation
+  and no audit of *who* looked at which student. For a pilot with named mentors
+  that is the next thing to build, not a detail.
+- **The no-auth demo mode trusts the whole compose network.** With
+  `EOAI_ALLOW_NO_AUTH=1` the API accepts any request that reaches it, and the
+  dashboard's proxy now reaches it over the container network rather than the
+  loopback publish. That network is still local to the machine, so the B-07 claim
+  holds — but the moment anything other than this stack joins it, set a real
+  `API_KEY`.
 - **No backups.** `alerts` is the only record of what the system ever did and
   nothing dumps it on a schedule. See [Backing up](#backing-up).
 - **No run identity, and an empty run leaves no trace.** A run is identified only
-  by a Python-side microsecond timestamp; there is no `runs` table. A run that
+  by a Python-side microsecond timestamp; there is no `runs` table. The scheduler's
+  state file records whether the LAST run succeeded or failed, which is what the
+  heartbeat and the health status read — but it is one line, not a history: there is
+  still no per-run row, no duration and no record of a run that found nobody. A run that
   finds nobody at risk writes nothing at all, so "the pipeline ran and everyone is
   fine" and "the pipeline has been dead for three days" are indistinguishable —
   and the next run compares against a stale baseline. For an alerting product,

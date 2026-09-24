@@ -14,6 +14,10 @@ __pycache__/
 .env
 .env.docker
 
+# Scheduler runtime state (last successful run / last failure, B-14). Written by
+# scripts/scheduler.py; in compose it lives on a named volume instead.
+state/
+
 # CatBoost training scratch output
 catboost_info/
 notebooks/catboost_info/

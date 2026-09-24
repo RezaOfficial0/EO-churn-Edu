@@ -38,6 +38,10 @@ API_PORT="$(env_get API_PORT 8000)"
 DASHBOARD_PORT="$(env_get DASHBOARD_PORT 5173)"
 DB_PORT="$(env_get DB_PORT 5432)"
 POSTGRES_USER="$(env_get POSTGRES_USER postgres)"
+# Sadece ekrana yazmak için: zamanlayıcı servisinin saatini demo sonunda
+# söylüyoruz ki "günlük koşuyu kim tetikliyor" sorusu açıkta kalmasın (B-14).
+RUN_AT="$(env_get RUN_AT 09:00)"
+SCHEDULER_TIMEZONE="$(env_get SCHEDULER_TIMEZONE Europe/Istanbul)"
 
 FILES=(--env-file .env.docker -f docker-compose.yml)
 if [ -d ../Eo-Churn-Dashboard-demo-Edu ]; then
@@ -60,6 +64,8 @@ for _ in $(seq 1 60); do
     echo "   API       http://localhost:${API_PORT}/docs"
     [ -d ../Eo-Churn-Dashboard-demo-Edu ] && echo "   Dashboard http://localhost:${DASHBOARD_PORT}"
     echo "   Postgres  localhost:${DB_PORT} (kullanıcı ${POSTGRES_USER})"
+    echo "   Zamanlayıcı: günlük koşu ${RUN_AT} ${SCHEDULER_TIMEZONE}"
+    echo "                log:  docker compose --env-file .env.docker logs -f scheduler"
     echo
     echo "   Günlük listeyi sıfırlamak için:  ./scripts/demo_reset.sh"
     exit 0

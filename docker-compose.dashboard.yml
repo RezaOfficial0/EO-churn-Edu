@@ -12,12 +12,37 @@ services:
     build:
       context: ../Eo-Churn-Dashboard-demo-Edu
       args:
-        # Vite değişkenleri BUILD zamanında koda gömülür, runtime env değildir.
-        # Ve tarayıcı senin makinende çalışıyor, compose ağında değil - bu yüzden
-        # değer "api" değil, dışarıdan görünen adres olmalı.
-        VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8000}
+        # D-09: this is a PATH, not an address. The browser calls /api on the
+        # dashboard's own origin and nginx inside the dashboard container
+        # proxies it to the API, adding X-API-Key server-side. Vite still inlines
+        # the value at BUILD time, but because it is same-origin it no longer has
+        # to track API_PORT, and it can no longer be a name that only resolves
+        # inside the compose network.
+        #
+        # The key is deliberately NOT here: a build argument ends up in the image
+        # history and a VITE_ variable ends up in the bundle. It is a runtime
+        # environment variable below instead.
+        VITE_API_BASE: ${VITE_API_BASE:-/api}
+    environment:
+      # Read at container start by nginx's envsubst, not at build time.
+      #
+      # "api" is the compose service name and it is correct exactly here, because
+      # the proxy runs in a container on the compose network - not in the
+      # browser. That is why the API port no longer has to be published for the
+      # dashboard to work; the loopback publish in docker-compose.yml is now only
+      # for curl, /docs and demo_up.sh's health poll.
+      API_UPSTREAM: ${API_UPSTREAM:-http://api:8000}
+      # One variable, both ends: the same API_KEY the API requires is the one the
+      # proxy injects. EMPTY means no header is injected at all, which is the
+      # local demo - the API runs with EOAI_ALLOW_NO_AUTH=1 there and requires
+      # nothing. Set a real key in .env.docker and both ends move together, with
+      # nothing to change in the dashboard build.
+      API_KEY: ${API_KEY:-}
     depends_on:
       api:
+        # The proxy needs this too, not just the data: nginx resolves the "api"
+        # hostname when it loads the rendered config, so the API container has to
+        # exist before the dashboard starts.
         condition: service_healthy
     ports:
       - "${DASHBOARD_PORT:-5173}:80"

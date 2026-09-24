@@ -4,6 +4,15 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
+# The zone database. The scheduler (B-14) resolves RUN_AT in an IANA zone - the
+# default is Europe/Istanbul, i.e. UTC+3 - through the standard library's zoneinfo,
+# and the slim base image ships no /usr/share/zoneinfo. Without this the scheduler
+# refuses to start rather than silently running the daily alert at 06:00 local.
+# A system package on purpose: requirements.txt gains nothing.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install dependencies first so this layer is cached when only code changes.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
