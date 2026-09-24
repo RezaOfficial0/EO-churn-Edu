@@ -1,29 +1,15 @@
--- EO-Churn-Edu — operational schema for the DAILY pipeline (DATA_SOURCE=db).
+-- 000 - the schema as it stood when migrations started being tracked (B-16).
 --
--- Scope: only the daily pipeline's operational data lives here. Training data and
--- the training pipeline stay CSV-based and are not represented in this schema.
+-- A FROZEN copy of db/schema.sql at that point. Never edit this file: a database
+-- that already recorded 000 will not run it again, so an edit here only changes
+-- what NEW databases get, and the two would drift apart silently. Every schema
+-- change is a new NNN_*.sql file, plus the same change in db/schema.sql (the
+-- readable "current shape" document). tests/test_migrations.py checks that a
+-- database built from these files matches one built from db/schema.sql.
 --
--- Create a database from it with:
---
---     createdb eo_churn
---     python scripts/init_db.py
---
--- This file is the CURRENT SHAPE of the schema, kept readable in one place.
--- `python scripts/init_db.py` does not apply it: it runs db/migrations/ (tracked
--- in schema_migrations, each file once). Changing the schema means a new
--- db/migrations/NNN_*.sql AND the same edit here; tests/test_migrations.py fails
--- when the two disagree. Applying this file directly still works for a scratch
--- database (every statement is IF NOT EXISTS), but that database is untracked.
+-- Everything is IF NOT EXISTS, so this also runs cleanly against a database that
+-- was created before tracking existed - that is how such a database is adopted.
 
-
--- Today's students to score: the id columns natively, every model feature packed
--- into `features`.
---
--- Why JSONB instead of 24 typed columns: the feature list is per client. EO-Churn
--- is meant to be re-pointed at a new dataset by editing config.FEATURES, and a
--- typed table would turn every such change into a migration. The trade-off is that
--- the database does not type-check feature values — src/data/loader.py does, by
--- coercing them back to numeric on read.
 CREATE TABLE IF NOT EXISTS daily_students (
     student_id      TEXT PRIMARY KEY,
     enrollment_date DATE,

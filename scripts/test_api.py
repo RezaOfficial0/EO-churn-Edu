@@ -3,15 +3,15 @@ sample daily data. This is a quick end-to-end check, not the unit-test suite;
 run `pytest` for that.
 
     uvicorn api.main:app &
-    python scripts/test_api.py           # read-only, writes nothing
-    python scripts/test_api.py --write   # also exercises the writing endpoint
+    python scripts/test_api.py
 
-Read-only by default: without `--write`, `POST /run-daily-pipeline` is skipped
-entirely, so the alert log is never touched and this can be re-run as often as
-you like. Skipped checks are reported as SKIP and do not affect the exit code,
-which is 0 only when nothing FAILed.
+Every endpoint the API still exposes is read-only, so this touches nothing and can
+be re-run as often as you like. The day's run is `python -m pipeline.daily_pipeline`
+and is deliberately not reachable over HTTP (B-08). Skipped checks are reported as
+SKIP and do not affect the exit code, which is 0 only when nothing FAILed.
 
-Set API_KEY in the environment if the server was started with one.
+Set API_KEY in the environment: the server does not start without one unless it was
+started with EOAI_ALLOW_NO_AUTH=1.
 """
 import argparse
 import json
@@ -25,7 +25,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 
-from config import CAT_COLS, DAILY_DATA_PATH, FEATURE_BOUNDS, FEATURES
+from config import (
+    CAT_COLS,
+    DAILY_DATA_PATH,
+    FEATURE_BOUNDS,
+    FEATURES,
+    FLAG_FEATURES,
+    INTEGER_FEATURES,
+)
 from src.data.features import add_monthly_value
 
 BASE_URL = "http://127.0.0.1:8000"
@@ -59,16 +66,22 @@ def skip(name, reason=""):
 
 
 def valid_predict_body(daily):
-    """POST /predict takes MODEL features, so derived ones have to be computed."""
+    """POST /predict takes MODEL features, so derived ones have to be computed.
+
+    Counters and flags go as `int`: the endpoint refuses a float there (B-10), which
+    is the point - "2.7 support tickets" is a broken client, not a measurement.
+    """
     row = add_monthly_value(daily).iloc[0]
     body = {}
     for feature in FEATURES:
         if feature in CAT_COLS:
             body[feature] = str(row[feature])
-        elif feature in row and pd.notna(row[feature]):
-            body[feature] = float(row[feature])
+            continue
+        if feature in row and pd.notna(row[feature]):
+            value = float(row[feature])
         else:
-            body[feature] = float(FEATURE_BOUNDS[feature][0])
+            value = float(FEATURE_BOUNDS[feature][0])
+        body[feature] = int(value) if feature in INTEGER_FEATURES + FLAG_FEATURES else value
     return body
 
 
@@ -115,15 +128,10 @@ def student_record_problems(student):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Live smoke test for the churn API. Read-only unless --write is given.",
+        description="Live smoke test for the churn API. Read-only: the API has no "
+                    "write endpoint any more.",
     )
-    parser.add_argument(
-        "--write",
-        action="store_true",
-        help="also test POST /run-daily-pipeline, which records a run in the alert "
-             "log. Off by default so the smoke test has no side effects.",
-    )
-    args = parser.parse_args(argv)
+    parser.parse_args(argv)
 
     daily = pd.read_csv(DAILY_DATA_PATH)
     student_id = str(daily.iloc[0]["student_id"])
@@ -186,22 +194,10 @@ def main(argv=None):
         f"-> {sample.get('student_id')}" if not problems else f"-> {problems}",
     )
 
-    if args.write:
-        status, recorded = call("POST", "/run-daily-pipeline")
-        check("POST /run-daily-pipeline", status == 200, f"-> {status}")
-
-        # Same threshold, same work: the read-only endpoint has to return
-        # exactly the students the recorded run did.
-        listed_ids = {s.get("student_id") for s in (listed_students or [])}
-        recorded_ids = {s.get("student_id") for s in recorded.get("students", [])}
-        agree = listed_ids == recorded_ids
-        detail = f"-> /students={len(listed_ids)} pipeline={len(recorded_ids)}"
-        if not agree:
-            detail += f" differing={sorted(listed_ids ^ recorded_ids)}"
-        check("/students and /run-daily-pipeline agree", agree, detail)
-    else:
-        skip("POST /run-daily-pipeline", "(writes to the alert log; pass --write)")
-        skip("/students and /run-daily-pipeline agree", "(needs --write)")
+    # The write endpoint was removed (B-08). A server that still answers it is
+    # running older code than this repo, which is worth failing over.
+    status, _ = call("POST", "/run-daily-pipeline")
+    check("POST /run-daily-pipeline is gone", status in (404, 405), f"-> {status}")
 
     print()
     failed = [name for name, status in results if status == "FAIL"]
@@ -212,7 +208,7 @@ def main(argv=None):
         return 1
     summary = f"all {len(passed)} checks passed"
     if skipped:
-        summary += f", {len(skipped)} skipped (--write to include them)"
+        summary += f", {len(skipped)} skipped"
     print(summary + ".")
     return 0
 

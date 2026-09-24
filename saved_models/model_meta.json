@@ -1,7 +1,7 @@
 {
   "trained_at": "2026-09-17T08:25:19Z",
   "is_synthetic_data": true,
-  "data_file": "/Users/rizatalebi/Documents/Eo-Churn-FullProject/EO-churn/data/mentorluk_churn_veriseti.csv",
+  "data_file": "data/mentorluk_churn_veriseti.csv",
   "data_rows": 3384,
   "data_sha256": "f0c092fbdd4b9c1267e27a3c1eeacd1d86a5e70b81bda9f22f556865517cfccd",
   "features": [
@@ -69,7 +69,7 @@
     }
   },
   "calibration_method": "sigmoid",
-  "calibrator_path": "/Users/rizatalebi/Documents/Eo-Churn-FullProject/EO-churn/saved_models/calibrator.joblib",
+  "calibrator_path": "saved_models/calibrator.joblib",
   "metrics": {
     "threshold": 0.29,
     "roc_auc": 0.7184936943293059,

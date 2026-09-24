@@ -181,6 +181,44 @@ FEATURE_BOUNDS = {
 }
 
 
+# The accepted values of each categorical field. CatBoost does not reject an unseen
+# category, it hashes it and returns a confident-looking probability - so
+# {"plan_type": "banana"} used to score 200 and nothing anywhere said it was
+# nonsense. The API is the only layer that can refuse it, and it can only refuse
+# what is written down. Per client, like FEATURES and FEATURE_LABELS.
+CATEGORICAL_LEVELS = {
+    "grade": ["11. Sınıf", "12. Sınıf", "Mezun"],
+    "track": ["Sayısal", "Eşit Ağırlık", "Sözel", "Dil"],
+    "city_tier": ["Tier 1 (Büyükşehir)", "Tier 2", "Tier 3"],
+    "parent_involvement": ["Düşük", "Orta", "Yüksek"],
+    "plan_type": ["Aylık", "3 Aylık", "Yıllık"],
+}
+
+# A category name longer than this is a malformed request, not a level: checked on
+# the config table rather than per request, because the API validates categoricals
+# against the list above and never sees a value that is not in it.
+MAX_CATEGORY_LENGTH = 64
+
+# Numeric features that are whole numbers by nature - counters and day counts.
+# "2.7 support tickets in 90 days" is not a measurement the model was trained on,
+# and accepting it hides a broken client instead of reporting it.
+INTEGER_FEATURES = [
+    "days_since_last_contact",
+    "late_response_count_30d",
+    "trial_exam_count_total",
+    "missed_trial_exam_count",
+    "support_ticket_count_90d",
+    "days_to_next_exam",
+]
+
+# 0/1 indicator columns produced by feature engineering. There is no such thing as
+# a survey that is 0.5 missing.
+FLAG_FEATURES = [
+    "weekly_study_hours_actual_missing",
+    "satisfaction_missing",
+]
+
+
 # --- Notifications ----------------------------------------------------------
 # Human-readable Turkish label for each feature, used in the daily alert message
 # a mentor actually reads. "days_since_last_contact (+0.91)" means nothing to
@@ -261,6 +299,36 @@ def _validate_feature_config() -> None:
     if missing_labels:
         problems.append(f"FEATURES without a FEATURE_LABELS entry: {missing_labels}")
 
+    # The API builds a Literal[...] per categorical from this table, so a missing
+    # entry is not a cosmetic gap: it is a field that would accept any string.
+    if set(CATEGORICAL_LEVELS) != set(CAT_COLS):
+        problems.append(
+            f"CATEGORICAL_LEVELS keys {sorted(CATEGORICAL_LEVELS)} do not match "
+            f"CAT_COLS {sorted(CAT_COLS)}"
+        )
+    for column, levels in CATEGORICAL_LEVELS.items():
+        if not levels:
+            problems.append(f"CATEGORICAL_LEVELS[{column!r}] is empty")
+        too_long = [level for level in levels if len(level) > MAX_CATEGORY_LENGTH]
+        if too_long:
+            problems.append(
+                f"CATEGORICAL_LEVELS[{column!r}] has level(s) longer than "
+                f"{MAX_CATEGORY_LENGTH} characters: {too_long}"
+            )
+
+    typed_numeric = INTEGER_FEATURES + FLAG_FEATURES
+    unknown_typed = [name for name in typed_numeric if name not in numeric]
+    if unknown_typed:
+        problems.append(
+            f"INTEGER_FEATURES / FLAG_FEATURES names that are not numeric FEATURES: "
+            f"{unknown_typed}"
+        )
+    bad_flag_bounds = [
+        name for name in FLAG_FEATURES if FEATURE_BOUNDS.get(name) != (0, 1)
+    ]
+    if bad_flag_bounds:
+        problems.append(f"FLAG_FEATURES without (0, 1) bounds: {bad_flag_bounds}")
+
     # Not fatal on its own, but it is always a leftover from a rename.
     stale_bounds = sorted(set(FEATURE_BOUNDS) - set(FEATURES))
     if stale_bounds:
@@ -292,6 +360,28 @@ NOTIFY_TITLE = os.environ.get("NOTIFY_TITLE", "EO-Churn — Günlük Risk Uyarı
 DATA_SOURCE = os.getenv("DATA_SOURCE", "csv")  # "csv" or "db"
 API_KEY = _env_secret("API_KEY") or None
 DATABASE_URL = _env_secret("DATABASE_URL") or None
+
+
+# --- API authentication -----------------------------------------------------
+# The address this API is reachable on: uvicorn's `--host`, or the address Docker
+# publishes the container port on. Neither is visible from inside the ASGI app, so
+# the deployment declares it here - "can another machine reach this port?" is
+# exactly what decides whether a missing API_KEY may be tolerated, and the app has
+# to be able to answer that at startup.
+#
+# The default is deliberately the UNSAFE answer: unset means "we do not know", and
+# an unknown address is treated as public. A wrong guess in the other direction
+# would serve every student's record to the network.
+API_BIND_HOST = os.environ.get("API_BIND_HOST", "0.0.0.0").strip() or "0.0.0.0"
+
+# The one way to run without authentication. It has to be typed out on purpose,
+# which an empty API_KEY in a shipped .env template never is - that is how the
+# documented setup path ended up producing an open service.
+ALLOW_NO_AUTH = os.environ.get("EOAI_ALLOW_NO_AUTH", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 
 # Browser origins allowed to call the API (CORS).

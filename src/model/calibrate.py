@@ -9,6 +9,7 @@ the number the API returns as `churn_probability` is one a mentor can read as
 Two methods, chosen by `config.CALIBRATION_METHOD` (see the comment there for the
 trade-off). Both expose `.predict()`, so nothing downstream knows which is in use.
 """
+import logging
 import os
 
 import joblib
@@ -18,7 +19,13 @@ from sklearn.linear_model import LogisticRegression
 
 from config import CALIBRATION_METHOD
 
+logger = logging.getLogger(__name__)
+
 METHODS = ("sigmoid", "isotonic")
+
+
+class CalibratorMissingError(RuntimeError):
+    """`CALIBRATION_METHOD` asks for a calibrator and there is no file to load."""
 
 
 class PlattCalibrator:
@@ -84,9 +91,27 @@ def save_calibrator(calibrator, path):
     joblib.dump(calibrator, path)
 
 
-def load_calibrator(path):
-    """Load a saved calibrator, or return None if the file is missing."""
+def load_calibrator(path, *, required: bool = True):
+    """Load the saved calibrator. Raise if it is missing and one is configured.
+
+    Swallowing the missing file and returning None was the quietest failure in the
+    system: `churn_proba` then hands back CatBoost's raw score, which with
+    `auto_class_weights="Balanced"` is not a probability (Brier 0.203 raw vs 0.173
+    calibrated) - while the alert threshold, 0.29, was chosen on calibrated scores.
+    The mentor's list grows several times over, every probability shown is wrong, and
+    nothing anywhere says so. Failing to start is the better outcome.
+
+    `required=False` is for a caller that deliberately wants the raw score (a
+    diagnostic, a comparison), not for serving.
+    """
     try:
         return joblib.load(path)
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError) as e:
+        if required and CALIBRATION_METHOD:
+            raise CalibratorMissingError(
+                f"CALIBRATION_METHOD is {CALIBRATION_METHOD!r} but no calibrator could be "
+                f"loaded from {path}: {e}. Run running_train_pipeline.py, or set "
+                f"CALIBRATION_METHOD to a falsy value to serve raw scores on purpose."
+            )
+        logger.warning("no calibrator loaded from %s - probabilities will be RAW", path)
         return None

@@ -8,7 +8,7 @@ reach out before the student is gone.
 |---|---|
 | **Model** | CatBoost classifier, calibrated with Platt scaling (logistic / "sigmoid") so `churn_probability` is a real probability, not a ranking score |
 | **Explanations** | top-N SHAP contributions per student, in plain Turkish |
-| **Serving** | FastAPI — single prediction, lookup by `student_id`, read-only listing, daily batch run |
+| **Serving** | FastAPI — single prediction, lookup by `student_id`, read-only listing. The daily batch run is a scheduled command, not an endpoint |
 | **Storage** | CSV files or PostgreSQL, switched by one environment variable |
 | **Delivery** | Telegram, email (SMTP), or webhook |
 
@@ -120,7 +120,7 @@ the compose network. Both carry secrets and neither is committed — the
 | `VITE_API_BASE` | the address the *browser* uses to reach the API. Baked in at **build** time, so change it and rebuild with `--build`. Must match `API_PORT`, and must never be `http://api:8000` — that name only resolves inside the compose network |
 | `ALLOWED_ORIGINS` | CORS allow-list; must contain the dashboard's real origin |
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | the template ships `postgres` / `eochurn` — **a demo password, change it for anything that is not your own laptop** |
-| `API_KEY` | empty in the template, which means **authentication is off**. See [Known limitations](#known-limitations) before exposing the port |
+| `API_KEY` | empty in the template. The API then **refuses to start** unless `EOAI_ALLOW_NO_AUTH=1` is also set, which the template does for the local demo — and which is only honest because compose publishes the API port on `127.0.0.1` only. Reaching it from another machine means setting a real key |
 | `NOTIFY_CHANNELS` | empty prints to stdout only; `telegram` actually sends |
 
 Values containing spaces must be quoted (`NOTIFY_TITLE="EO-Churn — Risk"`).
@@ -145,8 +145,24 @@ sed -i '' 's|^VITE_API_BASE=.*|VITE_API_BASE=http://localhost:8010|' .env.docker
 
 The `status` field (`new` / `still_at_risk`) is computed against the *previous*
 run. Without a reset, a second demo on the same day shows "0 new" and a message
-with no reasons in it. The reset truncates `alerts`, reloads the daily data and
-leaves exactly one run behind, so every student reads as new.
+with no reasons in it.
+
+The reset truncates `alerts`, reloads the daily data, records a **synthetic
+"yesterday" run** (`scripts/seed_demo_history.py`) and then today's real run. The
+synthetic run exists because two parts of the message only appear when there is
+an earlier run to compare against — the "already flagged yesterday" summary and
+its trend arrows (`%56 ↑ (önceki %42)`). With a single run neither renders.
+About 60% of today's at-risk students are carried into "yesterday", mostly at a
+lower probability, so the demo shows both new students in detail and repeat
+students with rising risk. The choice is seeded, so every reset gives the same
+demo.
+
+`./scripts/demo_reset.sh --no-history` skips the synthetic run: one run only,
+every student new, no arrows.
+
+`seed_demo_history.py` fabricates history. It refuses to run against an alert log
+that already has runs unless given `--force`, and must never be pointed at a
+customer's data.
 
 To preview the notification without sending anything:
 
@@ -216,7 +232,7 @@ Every command in the project, in the order you would meet them.
 
 | Command | What it does |
 |---|---|
-| `python running_train_pipeline.py` | train, calibrate, pick the threshold, evaluate, write `saved_models/` |
+| `python running_train_pipeline.py` | train, calibrate, pick the threshold, evaluate, write `saved_models/`. Required before serving: without `saved_models/calibrator.joblib` the API reports `degraded` and refuses to score, and the daily pipeline stops (B-20) |
 | `python scripts/build_training_data.py` | writes the engineered frame to `data/updated_data.csv` **for inspection only** |
 | `python scripts/compare_feature_sets.py` | train several feature-set variants into a temp dir and print a comparison table; touches nothing in `saved_models/` |
 
@@ -233,7 +249,7 @@ and see what the recipe produced.
 | Command | What it does |
 |---|---|
 | `createdb eo_churn` | create the database (or do it in DataGrip / pgAdmin) |
-| `python scripts/init_db.py` | apply `db/schema.sql` + every file in `db/migrations/`, then verify |
+| `python scripts/init_db.py` | apply the migrations this database has not run yet, then verify |
 | `python scripts/init_db.py --verify` | check the schema, change nothing |
 | `python scripts/init_db.py --create-db` | also create the database named in `DATABASE_URL` if missing |
 | `python scripts/load_daily_students.py` | load `data/daily_data.csv` into `daily_students` |
@@ -281,7 +297,7 @@ and see what the recipe produced.
 | Command | What it does |
 |---|---|
 | `./scripts/demo_up.sh` | build and start the whole stack, wait until the API is healthy |
-| `./scripts/demo_reset.sh` | back to one clean run — do this before every demo |
+| `./scripts/demo_reset.sh` | back to a clean demo state (synthetic yesterday + today) — do this before every demo |
 | `./scripts/demo_message.sh` | print the daily alert message without sending it |
 | `docker compose --env-file .env.docker ps` | what is running |
 | `docker compose --env-file .env.docker logs -f api` | follow the API log |
@@ -358,8 +374,8 @@ data/
   daily_alerts.csv              the alert log in CSV mode (gitignored, regenerated)
 
 db/
-  schema.sql                  Postgres schema for the daily pipeline
-  migrations/                 changes for a database created before a schema change
+  schema.sql                  the current schema, readable in one place (documentation)
+  migrations/                 NNN_*.sql, each run once per database (000 = baseline)
 
 src/
   data/loader.py              CSV and Postgres backends for daily data + the alert log,
@@ -367,8 +383,8 @@ src/
   data/features.py            THE feature-engineering recipe (nulls -> flags + impute)
   data/validation.py          reject bad data before it reaches the model
   data/preprocess.py          select FEATURES, cast categoricals, train/val/test split
-  serialization.py            numpy/pandas scalars -> JSON-safe Python types
-  logging_setup.py            one-time logging configuration
+  serialization.py            to_external(): the one conversion every API response goes through
+  logging_setup.py            one-time logging configuration + the per-request id
   model/model.py              build the CatBoost classifier
   model/train.py              fit with early stopping on the validation set
   model/calibrate.py          Platt (sigmoid) and isotonic calibrators; sigmoid is the one in use
@@ -391,7 +407,7 @@ api/main.py                   FastAPI app
 
 scripts/
   build_training_data.py      raw CSV -> data/updated_data.csv (inspection only)
-  init_db.py                  apply db/schema.sql + db/migrations/ (no psql needed)
+  init_db.py                  run pending db/migrations/, tracked (no psql needed)
   load_daily_students.py      CSV -> the daily_students table
   send_daily_alerts.py        deliver today's alert to Telegram / email / webhook
   telegram_setup.py           find the chat id for .env, prove the bot can reach it
@@ -399,10 +415,11 @@ scripts/
   test_api.py                 live smoke test (needs a running server; read-only by default)
   compare_feature_sets.py     offline feature-set comparison (writes to a temp dir only)
   demo_up.sh                  bring the whole Docker stack up
-  demo_reset.sh               back to one clean run, before a demo
+  demo_reset.sh               back to a clean demo state, before a demo
+  seed_demo_history.py        DEMO ONLY: a synthetic "yesterday" run, so trends render
   demo_message.sh             print the daily message without sending it
 
-tests/                        pytest suite (67 tests, 9 of them database-only)
+tests/                        pytest suite (the 9 database tests skip without TEST_DATABASE_URL)
 
 metrics/                      per-run training metrics (gitignored, regenerated)
 saved_models/                 the served model, calibrator and model_meta.json (committed)
@@ -440,12 +457,16 @@ Everything you would tune per deployment lives in `config.py`:
 | `DECISION_COST` | relative cost of a false alarm vs. a missed churn — drives threshold selection |
 | `PRECISION_AT_K` | how many students a mentor can realistically contact per run |
 | `FEATURE_BOUNDS` | accepted min/max per numeric input (API input validation) |
+| `CATEGORICAL_LEVELS` | the accepted values of each categorical input. **Per client.** CatBoost hashes an unseen category instead of refusing it, so this list is the only thing that rejects `{"plan_type": "banana"}` |
+| `MAX_CATEGORY_LENGTH` | longest allowed category name, checked on `CATEGORICAL_LEVELS` itself |
+| `INTEGER_FEATURES`, `FLAG_FEATURES` | which numeric inputs are whole numbers (counters, day counts) and which are 0/1 indicators — `POST /predict` refuses a float in either |
 | `MAX_NULL_RATIO_PER_COLUMN` | a single column above this fraction of nulls fails validation. **Training only** — the daily pipeline passes `1.0`, i.e. disables it, and relies on `require_no_nulls` after imputation instead |
 | `SHAP_TOP_N_FEATURES` | how many reasons to return per student |
 | `FEATURE_LABELS` | Turkish label per feature, used in the daily alert message |
 
 `config.py` runs `_validate_feature_config()` at import: it checks `FEATURES`
-against `CAT_COLS`, `FEATURE_BOUNDS`, `FEATURE_LABELS` and `STUDENT_INFO`, and
+against `CAT_COLS`, `FEATURE_BOUNDS`, `FEATURE_LABELS`, `CATEGORICAL_LEVELS`,
+`INTEGER_FEATURES`, `FLAG_FEATURES` and `STUDENT_INFO`, and
 refuses to load on a duplicate, a stale bound, a missing label or a target column
 that leaked into the feature list. If you are onboarding a new dataset, that
 function's error messages are the fastest way to find what you forgot. It checks
@@ -459,7 +480,9 @@ is optional and documented there):
 |---|---|
 | `DATA_SOURCE` | `csv` (default) or `db` |
 | `DATABASE_URL` | Postgres connection string, required for `db` |
-| `API_KEY` | shared secret for the `X-API-Key` header; unset disables auth |
+| `API_KEY` | shared secret for the `X-API-Key` header; unset means the API refuses to start |
+| `API_BIND_HOST` | the address the API is reachable on; unset is treated as public |
+| `EOAI_ALLOW_NO_AUTH` | `1` starts without a key on a loopback `API_BIND_HOST` (local development only) |
 | `ALLOWED_ORIGINS` | CORS origins allowed to call the API |
 | `NOTIFY_CHANNELS` | `telegram`, `email`, `webhook` — comma-separated, empty = print only |
 | `NOTIFY_TITLE` | heading at the top of every alert message |
@@ -483,9 +506,10 @@ Training is unaffected either way: it always reads CSV.
 Two differences below the API, worth knowing before you build on the alert log:
 the CSV log carries an extra `run_date` column and **cannot** hold
 `top_reasons_detail` (the message layer re-parses the display string in CSV mode),
-and the CSV log has no concurrency control, while the DB has a unique index on
-`(run_at, student_id)`. Two pipeline runs at the same moment are safe-ish on
-Postgres and can interleave rows in the CSV.
+and the DB has a unique index on `(run_at, student_id)` while the CSV relies on an
+exclusive `flock` around each append — so two pipeline runs at the same moment no
+longer splice their rows together in either backend, but only Postgres rejects a
+genuine duplicate.
 
 The switch exists so the two can run side by side. If the database is down,
 `DATA_SOURCE=csv` still works; if a CSV gets corrupted, `db` still works. It is a
@@ -497,7 +521,7 @@ fallback, not a migration you have to finish.
 createdb eo_churn                      # or create it in DataGrip / pgAdmin
 
 # put DATABASE_URL in .env, then:
-python scripts/init_db.py              # schema + migrations, then verify
+python scripts/init_db.py              # pending migrations, then verify
 python scripts/load_daily_students.py  # CSV -> daily_students
 
 # finally, in .env:
@@ -505,9 +529,10 @@ DATA_SOURCE=db
 ```
 
 `init_db.py` connects through the same driver the application uses, so it needs no
-`psql` on your PATH — if it works, the pipeline's connection works. It applies the
-schema, then every migration, then verifies the result; all three are safe to
-re-run. `--verify` checks without changing anything.
+`psql` on your PATH — if it works, the pipeline's connection works. It runs every
+migration this database has not recorded yet, then verifies the result. Safe to
+re-run: with nothing pending it changes nothing. `--verify` checks without
+changing anything, and also reports pending migrations.
 
 Creating the *database itself* is opt-in (`--create-db`) rather than automatic: a
 typo in `DATABASE_URL` would otherwise produce a mysteriously empty database
@@ -539,10 +564,24 @@ client: re-pointing the system at a new dataset means editing `config.FEATURES`,
 and typed columns would make that a migration every time. `loader.py` coerces the
 values back to numeric on read, so nothing downstream can tell the difference.
 
-`db/schema.sql` is safe to re-run — every statement is `IF NOT EXISTS`. That also
-means it will not *alter* an existing table, which is what `db/migrations/` is for:
-files that bring an older database in line. `init_db.py` applies both in order, so
-you never have to track which is which.
+**Migrations.** `init_db.py` runs the files in `db/migrations/` in number order
+and records each one in a `schema_migrations` table, so every migration runs
+**once** per database. `000_baseline.sql` is the schema as it stood when tracking
+started; a database created before that is adopted by the same command (the
+baseline is all `IF NOT EXISTS`, `001`/`002` are guarded). The whole run is one
+transaction under an advisory lock: a failing migration rolls back everything that
+run applied, and two `init` containers cannot migrate at the same time.
+
+`db/schema.sql` is the readable current shape, not something `init_db.py` applies.
+To change the schema:
+
+1. add `db/migrations/NNN_short_name.sql` (next number, lowercase, no gaps),
+2. make the same change in `db/schema.sql`,
+3. run `pytest` with `TEST_DATABASE_URL` set — `tests/test_migrations.py` fails if
+   the two describe different databases, or if a file is misnamed.
+
+Never edit a migration that has shipped: databases that already ran it will not run
+it again, and would silently differ from new ones.
 
 ---
 
@@ -569,9 +608,11 @@ Two commands joined with `&&`, deliberately: no alert goes out if the run failed
 pipeline that silently scored nothing must not produce a cheerful "bugün risk
 altında öğrenci yok" message.
 
-`status` is defined against the **previous recorded run**, which is why
-`POST /run-daily-pipeline` must not be called to populate a dashboard — every call
-creates a new "previous run". Use `GET /students` for display.
+`status` is defined against the **previous recorded run**, which is why the run is a
+scheduled command and not an endpoint: anything that could trigger it over HTTP —
+a double-clicked dashboard button included — would create a new "previous run" and
+mark every student `still_at_risk`. `POST /run-daily-pipeline` was removed for that
+reason (B-08). Use `GET /students` for display.
 
 ---
 
@@ -665,19 +706,26 @@ frontend.
 
 | Endpoint | Writes? | Purpose |
 |---|---|---|
-| `GET /health` | no | `ok`, or `degraded` with the reason if the model failed to load |
+| `GET /health` | no | `ok` only when the model, explainer, calibrator **and** meta are all loaded; otherwise `degraded` with the per-component flags. No file path, no load error |
 | `GET /students?threshold=` | **no** | score everyone, return those at or above the threshold — what a dashboard should call |
 | `GET /predict/{student_id}` | no | one student: probability, reasons, and the feature values behind them |
 | `POST /predict` | no | score one student who is not in the daily data. Takes **engineered** features, not a raw export row — see `API_CONTRACT.md` |
-| `POST /run-daily-pipeline` | **yes** | perform the day's run and record it |
-| `GET /metrics` | no | the loaded model's metadata and metrics |
+| `GET /metrics` | no | an allow-listed subset of the loaded model's metadata and metrics — never the paths, the data hash, the imputation medians or the per-segment error breakdown that `model_meta.json` also holds |
 
-Every endpoint except `/health` requires the `X-API-Key` header when `API_KEY` is
-set. Unset disables auth and the server logs a warning at startup.
+Every endpoint except `/health` requires the `X-API-Key` header — including `/docs`,
+`/redoc` and `/openapi.json`. Without `API_KEY` the API does not start at all; the
+only exception is `EOAI_ALLOW_NO_AUTH=1` with a loopback `API_BIND_HOST`, for local
+development.
 
-The distinction that matters: `GET /students` and `POST /run-daily-pipeline`
-compute the same thing, but only the second one records a run. Calling the second
-one to fill a page corrupts the `new` / `still_at_risk` history.
+Nothing on this list writes. The day's run — the one operation that records a run
+and therefore defines tomorrow's `new` / `still_at_risk` — is
+`python -m pipeline.daily_pipeline`, run by the scheduler. It used to be
+`POST /run-daily-pipeline`; that endpoint is gone.
+
+The access log writes the route template (`/predict/{student_id}`) and a per-request
+id, never the student id, and a rejected request is told what kind of thing was wrong
+without the ids or column names that go to the log. What is logged and how long to
+keep it: **`docs/LOGGING.md`**.
 
 ---
 
@@ -688,7 +736,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-67 tests. The 9 database tests skip unless you give them a throwaway database:
+The 9 database tests skip unless you give them a throwaway database:
 
 ```bash
 createdb eo_churn_test
@@ -834,6 +882,7 @@ is everything that actually has to change, in the order you would hit it.
 
 1. **`config.py`** — `RAW_DATA_PATH` / `DAILY_DATA_PATH`, then `FEATURES`,
    `CAT_COLS`, `STUDENT_INFO`, `TARGET_FEATURE`, `FEATURE_BOUNDS`,
+   `CATEGORICAL_LEVELS`, `INTEGER_FEATURES`, `FLAG_FEATURES`,
    `FEATURE_LABELS`, plus `PLAN_MONTHS` (hard-codes `Aylık` / `3 Aylık` / `Yıllık`)
    and the model filename in `MODEL_PATH`.
    `_validate_feature_config()` will tell you what you missed at import time.
@@ -940,33 +989,18 @@ Reducing 5–7 to `STUDENT_INFO`-driven SQL is the single change that would make
   capacity (a false alarm costs a fixed 1 unit however many you generate). Both
   cannot be right. In practice mentors work the top of the list, which makes
   `precision@20 = 0.75` the number that describes the real workflow.
-- **A missing calibrator degrades silently.** If `saved_models/calibrator.joblib`
-  cannot be read, `load_calibrator` returns `None` and scoring falls back to the
-  **raw** CatBoost output — which, with `auto_class_weights="Balanced"`, is not a
-  probability (raw Brier 0.203 versus calibrated 0.173). `GET /health` still
-  reports `ok`, no response field says so, and nothing is logged. Every number a
-  mentor prioritises on would be wrong with no signal at all.
 - **No scheduler.** The daily run is a cron line you have to add; nothing in the
   repo runs itself yet.
-- **Authentication is off by default, and turning it on breaks the dashboard.**
-  `API_KEY` is empty in both env templates, and an empty key disables auth
-  entirely — so a reachable port serves every student id and all 24 feature values
-  to anyone. And the dashboard has no way to send `X-API-Key`, so enabling the key
-  leaves the UI showing only errors. Auth is currently all-or-nothing; a reverse
-  proxy that injects the header server-side is the way out.
-- **`POST /run-daily-pipeline` is a write endpoint with no auth, no idempotency
-  and no lock.** Anything that can reach the port — including a double-clicked
-  button or a cross-site form post — records a run, which becomes the baseline the
-  next run's `new` / `still_at_risk` is measured against. The morning message then
-  goes out with an empty "new students" section. It should not be on the HTTP
-  surface; the day's run belongs to the scheduler.
-- **`GET /metrics` returns the whole of `model_meta.json`**, not the handful of
-  fields `API_CONTRACT.md` documents. That includes absolute developer paths, the
-  training-data hash, the imputation medians, the model hyperparameters and a
-  per-demographic false-negative breakdown. It needs an allow-list.
-- **`threshold` is not range-checked.** `?threshold=nan` returns a 500;
-  `?threshold=-inf` runs SHAP over the entire dataset first and *then* returns a
-  500. Values below 0 and above 1 are accepted silently.
+- **Turning authentication on breaks the dashboard.** Auth itself is now
+  fail-closed: without `API_KEY` the API refuses to start, and the only way around
+  that is `EOAI_ALLOW_NO_AUTH=1` on a loopback address. But the dashboard still has
+  no way to send `X-API-Key`, so setting a real key leaves the UI showing only
+  errors. Auth is all-or-nothing; a reverse proxy that injects the header
+  server-side is the way out.
+- **The dashboard still calls `POST /run-daily-pipeline`.** The endpoint was
+  removed (B-08) — the day's run belongs to the scheduler — but the dashboard is a
+  separate repo and its `src/api.js` has not been updated, so its "run" button now
+  gets a `404`.
 - **No backups.** `alerts` is the only record of what the system ever did and
   nothing dumps it on a schedule. See [Backing up](#backing-up).
 - **No run identity, and an empty run leaves no trace.** A run is identified only
@@ -989,13 +1023,6 @@ Reducing 5–7 to `STUDENT_INFO`-driven SQL is the single change that would make
   training run.
 - **`daily_students` is never pruned in `db` mode.** See
   [Setting up Postgres](#setting-up-postgres).
-- **No migration version table.** `schema.sql` plus every file in
-  `db/migrations/` is re-applied on every `init_db.py` run, so correctness depends
-  on every migration being idempotent forever. `001` is not: it re-issues
-  `ALTER COLUMN TYPE` on each run, taking an `ACCESS EXCLUSIVE` lock on `alerts`,
-  and it will fail outright once any view depends on that column — at which point
-  `init` exits non-zero and, because `api` waits on
-  `service_completed_successfully`, **the API never starts**.
 - **No KVKK/GDPR erasure path.** `alerts.student_id` is a foreign key with no
   `ON DELETE` policy and nothing deletes from `daily_students`, so an erasure
   request can only be honoured by destroying that student's alert history. There

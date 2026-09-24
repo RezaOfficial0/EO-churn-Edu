@@ -3,6 +3,7 @@
 `sys.path` is set so `import config`, `import src...`, `import api...` work when
 pytest is run from the repo root.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +12,12 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+
+# The API refuses to start without an API key (B-07), and the auth tests have to
+# run everywhere rather than skip themselves on a machine with no key. Set before
+# `import config`, which reads the environment at import time; `setdefault` so a
+# real API_KEY in the environment or in CI still wins.
+os.environ.setdefault("API_KEY", "test-api-key")
 
 from config import DAILY_DATA_PATH, RAW_DATA_PATH  # noqa: E402
 from src.data import loader  # noqa: E402

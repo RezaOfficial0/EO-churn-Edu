@@ -71,10 +71,22 @@ services:
     env_file: .env.docker
     environment:
       DATA_SOURCE: db
+      # B-07: the API refuses to start unauthenticated unless it is provably local.
+      # The port below is published on 127.0.0.1 only, so on this machine that claim
+      # is true; change either line and the other has to change with it.
+      API_BIND_HOST: 127.0.0.1
     ports:
-      - "${API_PORT:-8000}:8000"
+      # Loopback only. Öğrenci kayıtları ve 24 feature bu porttan dönüyor; demo
+      # için API_KEY'siz çalışmanın koşulu portun dışarı açık OLMAMASI.
+      # Başka bir makineden erişmen gerekiyorsa .env.docker'da API_KEY set et ve
+      # burayı "${API_PORT:-8000}:8000" yap.
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)\""]
+      # status == "ok", not just HTTP 200: /health answers 200 with
+      # {"status": "degraded"} when the model, the explainer, the calibrator or the
+      # meta failed to load, and a container that can never score must not be
+      # reported healthy (B-20).
+      test: ["CMD-SHELL", "python -c \"import json,urllib.request,sys; sys.exit(0 if json.load(urllib.request.urlopen('http://localhost:8000/health', timeout=3)).get('status') == 'ok' else 1)\""]
       interval: 5s
       timeout: 5s
       retries: 12
