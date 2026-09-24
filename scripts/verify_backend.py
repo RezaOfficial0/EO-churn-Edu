@@ -23,6 +23,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# The API step below runs the app in-process with TestClient: no port is ever bound,
+# so there is nothing for an API key to protect. Declaring that here - before config
+# is imported, which is when the environment is read - keeps a read-only backend check
+# from requiring the operator to invent an API_KEY first (B-07). An API_KEY that IS
+# set still takes effect; these two only matter when there is none.
+os.environ.setdefault("EOAI_ALLOW_NO_AUTH", "1")
+os.environ.setdefault("API_BIND_HOST", "127.0.0.1")
+
 _FAILURES: list[str] = []
 _STEP = 0
 _TOTAL = 8

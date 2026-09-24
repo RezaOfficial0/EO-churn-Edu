@@ -39,7 +39,7 @@ from src.data.validation import require_no_nulls, validate
 from src.explainer.shap_explainer import create_explainer, explain_customers
 from src.logging_setup import configure_logging
 from src.model.calibrate import load_calibrator
-from src.model.load import load_meta, load_model
+from src.model.load import check_meta_matches_config, load_meta, load_model
 from src.predictions.predict import predict
 from src.serialization import to_native
 
@@ -145,6 +145,10 @@ def main() -> None:
     configure_logging()
     model = load_model(MODEL_PATH)
     meta = load_meta(MODEL_META_PATH) or {}
+    # Fail before writing anything. A run whose feature order no longer matches the
+    # model, or whose calibrator is missing (load_calibrator raises), would still
+    # produce a list and a morning message - with the wrong students on it.
+    check_meta_matches_config(meta)
     result = run_daily_pipeline(
         model=model,
         explainer=create_explainer(model),

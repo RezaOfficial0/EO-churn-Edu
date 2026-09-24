@@ -44,6 +44,25 @@ _ID_COLUMN = STUDENT_INFO[0]
 _ALERT_COLUMNS = [_ID_COLUMN, "churn_probability", "status", "top_reasons"]
 
 
+# flock is POSIX-only. Linux and macOS are the platforms this runs on; anywhere
+# else the append keeps working, it just loses the guarantee, so this must not be
+# an import error.
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - not reachable on Linux/macOS
+    fcntl = None
+
+
+def _lock_exclusive(file_handle) -> None:
+    if fcntl is not None:
+        fcntl.flock(file_handle.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock(file_handle) -> None:
+    if fcntl is not None:
+        fcntl.flock(file_handle.fileno(), fcntl.LOCK_UN)
+
+
 # --- Engine ---------------------------------------------------------------
 _engine = None
 
@@ -251,7 +270,19 @@ def append_to_alert_log_csv(at_risk: pd.DataFrame, alerts_path=DAILY_ALERTS_PATH
     rows.insert(1, "run_date", run_at.date().isoformat())
 
     path = Path(alerts_path)
-    rows.to_csv(path, mode="a", header=not path.exists(), index=False)
+    # Two overlapping runs (a scheduler retry catching up with the attempt it was
+    # meant to replace) both append here, and pandas writes a frame in several
+    # write() calls with nothing serialising them - the result is two runs spliced
+    # together mid-line, which makes `previous_at_risk_ids` read garbage. One
+    # exclusive lock per append makes the whole block atomic, and the header
+    # decision is taken inside the lock for the same reason.
+    with open(path, "a", encoding="utf-8", newline="") as f:
+        _lock_exclusive(f)
+        try:
+            rows.to_csv(f, header=os.fstat(f.fileno()).st_size == 0, index=False)
+        finally:
+            f.flush()
+            _unlock(f)
     logger.info("daily run: %d at-risk students appended to %s", len(rows), alerts_path)
 
 

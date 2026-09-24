@@ -16,6 +16,17 @@ logger = logging.getLogger(__name__)
 class DataValidationError(Exception):
     """The data does not meet the minimum quality bar for the pipeline to continue."""
 
+
+def _fail(client_message: str, log_detail: str):
+    """Log what went wrong, raise only what a caller may be told.
+
+    `api/main.py` turns this exception's text straight into a 400 body, and these
+    messages used to carry ten real student ids and the full internal column list.
+    The operator needs the detail; the caller needs to know the data was rejected.
+    """
+    logger.error("data validation failed: %s", log_detail)
+    raise DataValidationError(client_message)
+
 ## analyizez DataFrame and return ...
 def validate(
     df: pd.DataFrame,
@@ -38,36 +49,45 @@ def validate(
     """
     missing = [c for c in required_columns if c not in df.columns]
     if missing:
-        raise DataValidationError(
-            f"missing required columns: {missing}. present: {list(df.columns)}"
+        _fail(
+            f"missing required columns: {len(missing)}",
+            f"missing required columns: {missing}. present: {list(df.columns)}",
         )
 
     if not allow_extra_columns:
         expected = set(required_columns) | set(STUDENT_INFO)
         unexpected = [c for c in df.columns if c not in expected]
         if unexpected:
-            raise DataValidationError(
+            _fail(
+                f"unexpected columns: {len(unexpected)} column(s) that are not part of "
+                f"the model input",
                 f"unexpected columns: {unexpected}. An extra column would be picked up "
-                f"as a model feature; drop it or pass allow_extra_columns=True."
+                f"as a model feature; drop it or pass allow_extra_columns=True.",
             )
 
     if df.empty:
-        raise DataValidationError("dataframe is empty")
+        _fail("dataframe is empty", "dataframe is empty")
 
     null_ratio = df[required_columns].isnull().mean()
     too_null = null_ratio[null_ratio > max_null_ratio]
     if not too_null.empty:
         offenders = {col: f"{ratio:.1%}" for col, ratio in too_null.items()}
-        raise DataValidationError(
-            f"columns above the {max_null_ratio:.0%} null limit: {offenders}"
+        _fail(
+            f"columns above the {max_null_ratio:.0%} null limit: {len(offenders)}",
+            f"columns above the {max_null_ratio:.0%} null limit: {offenders}",
         )
 
     if id_column in df.columns:
         duplicate_ids = df.loc[df[id_column].duplicated(), id_column].unique().tolist()
         if duplicate_ids:
-            shown = duplicate_ids[:10]
-            more = " ..." if len(duplicate_ids) > 10 else ""
-            raise DataValidationError(f"duplicate {id_column} values: {shown}{more}")
+            # Not even the log gets the ids: they identify (mostly under-age) people,
+            # and the duplicates are findable in the source data the operator already
+            # has. The count is what tells them it happened.
+            _fail(
+                f"duplicate {id_column} values: {len(duplicate_ids)}",
+                f"duplicate {id_column} values: {len(duplicate_ids)} distinct id(s) "
+                f"(ids not logged - look them up in the source data)",
+            )
 
     exact_duplicates = int(df.duplicated().sum())
     if exact_duplicates:
@@ -84,4 +104,7 @@ def require_no_nulls(df: pd.DataFrame, columns: list[str]) -> None:
     null_counts = df[columns].isnull().sum()
     offenders = null_counts[null_counts > 0].to_dict()
     if offenders:
-        raise DataValidationError(f"null values remain after feature engineering: {offenders}")
+        _fail(
+            f"null values remain after feature engineering: {len(offenders)} column(s)",
+            f"null values remain after feature engineering: {offenders}",
+        )

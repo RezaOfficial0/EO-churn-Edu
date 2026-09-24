@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config import (
+    BASE_DIR,
     CALIBRATION_METHOD,
     CALIBRATOR_PATH,
     CAT_COLS,
@@ -93,7 +94,7 @@ def run_training_pipeline(raw_data_path=RAW_DATA_PATH, model_path=MODEL_PATH):
     meta = {
         "trained_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "is_synthetic_data": True,
-        "data_file": str(raw_data_path),
+        "data_file": _relative_to_base(raw_data_path),
         "data_rows": int(len(engineered)),
         "data_sha256": _sha256_of_file(raw_data_path),
         "features": FEATURES,
@@ -105,7 +106,7 @@ def run_training_pipeline(raw_data_path=RAW_DATA_PATH, model_path=MODEL_PATH):
         "threshold_selection": threshold_selection,
         "imputation_values": imputation_values,
         "calibration_method": CALIBRATION_METHOD,
-        "calibrator_path": str(CALIBRATOR_PATH),
+        "calibrator_path": _relative_to_base(CALIBRATOR_PATH),
         "metrics": metrics,
         "cv_auc_mean": cv_auc["mean"],
         "cv_auc_std": cv_auc["std"],
@@ -119,6 +120,22 @@ def run_training_pipeline(raw_data_path=RAW_DATA_PATH, model_path=MODEL_PATH):
     _log_summary(meta)
 
     return {"model": model, "calibrator": calibrator, "meta": meta}
+
+
+def _relative_to_base(path) -> str:
+    """Express `path` relative to BASE_DIR, so model_meta.json carries no absolute path.
+
+    The file travels with the model - into a Docker image, onto a customer machine -
+    where the developer's `/Users/<name>/...` is both meaningless and a needless
+    disclosure of who trained it and where. A path outside the repo is kept absolute
+    rather than turned into a ../../.. chain: it is genuinely elsewhere, and saying so
+    is more useful than pretending otherwise.
+    """
+    resolved = Path(path).resolve()
+    try:
+        return resolved.relative_to(BASE_DIR).as_posix()
+    except ValueError:
+        return str(resolved)
 
 
 def _sha256_of_file(path) -> str:

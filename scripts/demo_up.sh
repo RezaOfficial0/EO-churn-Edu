@@ -52,7 +52,9 @@ docker compose "${FILES[@]}" up -d --build
 
 echo -n "-> API hazır olması bekleniyor "
 for _ in $(seq 1 60); do
-  if curl -fsS "http://localhost:${API_PORT}/health" >/dev/null 2>&1; then
+  # "degraded" de 200 döner (B-20): durumu okumadan beklemek, hiç skorlayamayan
+  # bir API'yi "hazır" ilan etmek olur.
+  if curl -fsS "http://localhost:${API_PORT}/health" 2>/dev/null | grep -q '"status":"ok"'; then
     echo " hazır."
     echo
     echo "   API       http://localhost:${API_PORT}/docs"
