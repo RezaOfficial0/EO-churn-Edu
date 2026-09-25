@@ -60,6 +60,20 @@ services:
       sh -c "python scripts/init_db.py &&
              python scripts/load_daily_students.py &&
              python -m pipeline.daily_pipeline"
+    volumes:
+      # Aynı /app/state: bu servis de günlük koşuyu çalıştırıyor, yani karantina
+      # sayacını (B-28) o yazıyor. Volume olmadan dosya container ile birlikte
+      # siliniyor ve zamanlayıcının gönderdiği mesaj atlanan satırlardan
+      # habersiz kalıyor.
+      - scheduler_state:/app/state
+    healthcheck:
+      # B-17 ile HEALTHCHECK imaja girdi (müşteri `docker run`/k8s ile koşarsa
+      # liveness sinyali olsun diye) ve o kontrol API için tanımlı. Bu servis bir
+      # sunucu değil, bir kez koşup çıkan bir komut: devre dışı bırakılmazsa
+      # `docker compose ps` onu boşuna (unhealthy) gösterir. `init`in bitip
+      # bitmediğine bakan şey çıkış kodu (service_completed_successfully), sağlık
+      # durumu değil.
+      disable: true
     restart: "no"
 
   # --- API -------------------------------------------------------------------
@@ -93,6 +107,12 @@ services:
       # /docs ve demo_up.sh'in /health yoklaması. İkisinden de vazgeçebiliyorsan
       # satırı tamamen yorum yapabilirsin - dashboard çalışmaya devam eder.
       - "127.0.0.1:${API_PORT:-8000}:8000"
+    volumes:
+      # API'nin kendisi buraya yazmıyor (hiçbir endpoint koşu yapmıyor, B-08), ama
+      # demo_reset.sh günlük koşuyu `compose run --rm --no-deps api` ile bu imajda
+      # çalıştırıyor. Volume burada da bağlı olmasa o koşunun karantina sayacı
+      # (B-28) geçici container'la birlikte kaybolurdu.
+      - scheduler_state:/app/state
     healthcheck:
       # status == "ok", not just HTTP 200: /health answers 200 with
       # {"status": "degraded"} when the model, the explainer, the calibrator or the

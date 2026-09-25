@@ -51,8 +51,25 @@ else
   echo "-> dashboard klasörü yok, sadece backend başlatılıyor"
 fi
 
-echo "-> imajlar kuruluyor ve servisler başlatılıyor (ilk sefer birkaç dakika sürer)"
-docker compose "${FILES[@]}" up -d --build
+echo "-> imajlar kuruluyor (ilk sefer birkaç dakika sürer)"
+docker compose "${FILES[@]}" build
+
+# B-17: imaj artık root değil `app` (uid 10001) olarak koşuyor. Zamanlayıcının
+# state volume'ü B-17'DEN ÖNCE oluşturulmuşsa içeriği root'a ait, `app` içine
+# yazamaz ve scheduler her açılışta PermissionError ile çıkıp restart döngüsüne
+# girer. Volume'un sahipliğini bir kez düzeltiyoruz.
+#
+# Sadece MEVCUT bir volume için gerekli: yeni bir volume'ü Docker imajdaki
+# /app/state dizininin sahipliğiyle oluşturuyor, o da zaten app. Komut idempotent,
+# her çalıştırmada zararsız.
+if docker volume inspect eo-churn_scheduler_state >/dev/null 2>&1; then
+  docker compose "${FILES[@]}" run --rm --no-deps --user 0 --entrypoint sh api \
+    -c 'chown -R app:app /app/state' >/dev/null 2>&1 \
+    || echo "   uyarı: /app/state sahipliği düzeltilemedi - zamanlayıcı yazamazsa"
+fi
+
+echo "-> servisler başlatılıyor"
+docker compose "${FILES[@]}" up -d
 
 echo -n "-> API hazır olması bekleniyor "
 for _ in $(seq 1 60); do

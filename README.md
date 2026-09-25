@@ -193,6 +193,72 @@ To preview the notification without sending anything:
 That is the `--dry-run` path, so nothing is sent even with
 `NOTIFY_CHANNELS` filled in.
 
+### Container hijyeni
+
+The image is the artefact that leaves this machine, so what is in it is a security
+decision, not a packaging detail (B-17).
+
+**No secrets.** `.dockerignore` ignores `.env*` as a glob, not the two names in use
+today: `.env` and `.env.docker` were listed and `.env.local` / `.env.staging` were
+not, so those would have been copied in — and `docker history` or a `docker cp`
+hands the SMTP password and the bot token to anyone holding the image. Settings
+arrive at *run* time through compose's `env_file`.
+
+**No student data beyond the demo sample.** `data/` is ignored **wholesale** and
+only `data/daily_data.csv` is re-included. This is an allow-list on purpose:
+`.gitignore` commits `data/*.csv` so that `git clone` runs immediately, so the day a
+real customer export is dropped into `data/`, a deny-list would have carried those
+student records into every image built afterwards — with nobody thinking to edit an
+ignore file first. Consequence, deliberately: **training does not work inside the
+container** (`running_train_pipeline.py` needs
+`data/mentorluk_churn_veriseti.csv`). Train on a workstation and ship the model in
+`saved_models/`.
+
+**Non-root.** The image creates `app` (uid 10001) and runs as it. Two directories
+are writable by it and nothing else is:
+
+| Path | Why it must be writable |
+|---|---|
+| `/app/state` | scheduler state (B-14) and the run-quality record (B-28); a named volume in compose |
+| `/app/data` | only the *directory*, so `DATA_SOURCE=csv` can create `daily_alerts.csv`. The files in it stay read-only — the app has no business rewriting the input it was handed |
+
+`/app` itself stays root-owned: the process serving student records cannot modify
+the code that serves them.
+
+**Pinned base image.** `python:3.13.7-slim-bookworm`, exact patch and exact Debian
+release, so the base cannot change under a pilot between two rebuilds. A digest is
+stronger and is the intended end state — `docker buildx imagetools inspect` prints
+it. Bump the pin deliberately; a pin nobody reviews is an unpatched base image.
+
+**Healthcheck in the image**, not only in compose, so `docker run` and a k8s
+Deployment get a liveness signal too. It checks `status == "ok"`, not merely HTTP
+200 (B-20). compose overrides it per service: `scheduler` has its own state-file
+check and `init` disables it, because neither serves HTTP.
+
+Verify all of it against a built image — the ignore file says what *should* happen,
+only the image says what did:
+
+```bash
+docker compose --env-file .env.docker build
+./scripts/check_image.sh                      # default image: eo-churn-api
+```
+
+#### Upgrading a demo that ran as root
+
+The one thing that can break an **existing** stack: a `scheduler_state` volume
+created before B-17 is owned by root, and `app` cannot write to it, so the
+scheduler exits with `PermissionError` on every start and restart-loops. A new
+volume is fine (Docker copies `/app/state`'s ownership from the image). Fix an old
+one once:
+
+```bash
+docker compose --env-file .env.docker run --rm --no-deps --user 0 \
+  --entrypoint sh api -c 'chown -R app:app /app/state'
+```
+
+`./scripts/demo_up.sh` does this automatically when the volume already exists, so
+the usual upgrade path is just running it again.
+
 ### Backing up
 
 There is no automatic backup. `daily_students` can be rebuilt from the CSV, but
@@ -234,6 +300,8 @@ a dump first unless you are certain the data is disposable.
 | dashboard says "API'ye ulaşılamıyor" while `curl` works | the dashboard's nginx cannot reach `API_UPSTREAM`. It resolves that hostname when it loads its config, so an API container replaced with a new IP needs `docker compose restart dashboard` |
 | dashboard shows an orange "Yapılandırma hatası" banner | it was built without `VITE_API_BASE`, or with an absolute `http://` address while the page is served over HTTPS. Rebuild with `--build-arg VITE_API_BASE=/api` |
 | `db` restarts in a loop, log mentions "unused mount/volume" | a `pgdata` volume created by an older config — `down -v` and start again (Postgres 18+ wants the mount at `/var/lib/postgresql`, not `/var/lib/postgresql/data`) |
+| `scheduler` restarts in a loop, log mentions `PermissionError: '/app/state/...'` | a `scheduler_state` volume created before the image went non-root (B-17). Fix its ownership once — see [Upgrading a demo that ran as root](#upgrading-a-demo-that-ran-as-root) |
+| `init` fails on `load_daily_students.py` with a missing `data/daily_data.csv` | the `!data/daily_data.csv` re-include in `.dockerignore` was removed or broken; `./scripts/check_image.sh` names it |
 | `demo_up.sh` times out | `docker compose --env-file .env.docker logs init api` |
 
 ---
@@ -325,6 +393,7 @@ and see what the recipe produced.
 | `./scripts/demo_up.sh` | build and start the whole stack, wait until the API is healthy |
 | `./scripts/demo_reset.sh` | back to a clean demo state (synthetic yesterday + today) — do this before every demo |
 | `./scripts/demo_message.sh` | print the daily alert message without sending it |
+| `./scripts/check_image.sh` | image hygiene against a built image: no secrets, no student data, non-root, healthcheck, pinned base (B-17) |
 | `docker compose --env-file .env.docker ps` | what is running |
 | `docker compose --env-file .env.docker logs -f api` | follow the API log |
 | `docker compose --env-file .env.docker logs -f scheduler` | follow the daily run / heartbeat log |
@@ -408,7 +477,10 @@ src/
   data/loader.py              CSV and Postgres backends for daily data + the alert log,
                               switched by DATA_SOURCE (training stays CSV-only)
   data/features.py            THE feature-engineering recipe (nulls -> flags + impute)
-  data/validation.py          reject bad data before it reaches the model
+  data/validation.py          reject bad data before it reaches the model, and
+                              quarantine the single rows that cannot be scored
+  data/run_quality.py         the skipped-row counts, handed from the run to the
+                              notification step (two processes, one fact)
   data/preprocess.py          select FEATURES, cast categoricals, train/val/test split
   serialization.py            to_external(): the one conversion every API response goes through
   logging_setup.py            one-time logging configuration + the per-request id
@@ -451,6 +523,8 @@ scripts/
   demo_reset.sh               back to a clean demo state, before a demo
   seed_demo_history.py        DEMO ONLY: a synthetic "yesterday" run, so trends render
   demo_message.sh             print the daily message without sending it
+  check_image.sh              image hygiene against a BUILT image: no secrets, no
+                              student data, non-root, healthcheck, pinned base
 
 tests/                        pytest suite (the 9 database tests skip without TEST_DATABASE_URL)
 
@@ -497,7 +571,10 @@ Everything you would tune per deployment lives in `config.py`:
 | `CATEGORICAL_LEVELS` | the accepted values of each categorical input. **Per client.** CatBoost hashes an unseen category instead of refusing it, so this list is the only thing that rejects `{"plan_type": "banana"}` |
 | `MAX_CATEGORY_LENGTH` | longest allowed category name, checked on `CATEGORICAL_LEVELS` itself |
 | `INTEGER_FEATURES`, `FLAG_FEATURES` | which numeric inputs are whole numbers (counters, day counts) and which are 0/1 indicators — `POST /predict` refuses a float in either |
-| `MAX_NULL_RATIO_PER_COLUMN` | a single column above this fraction of nulls fails validation. **Training only** — the daily pipeline passes `1.0`, i.e. disables it, and relies on `require_no_nulls` after imputation instead |
+| `MAX_NULL_RATIO_PER_COLUMN` | a single column above this fraction of nulls fails validation. **Training only** — the daily pipeline passes `1.0`, i.e. disables it, and quarantines rows instead (see [Unusable rows](#unusable-rows-quarantine)) |
+| `MAX_QUARANTINE_RATIO` | above this share of skipped rows, the daily run fails instead of messaging from what survived. Default `0.10` |
+| `QUARANTINE_WARN_RATIO` | at or above this share, the skipped count goes into the daily message and the ops channel. Default `0.01` |
+| `RUN_QUALITY_PATH` | where the pipeline leaves the skipped-row counts for `send_daily_alerts.py`. Default `./state/last_run_quality.json` |
 | `SHAP_TOP_N_FEATURES` | how many reasons to return per student |
 | `FEATURE_LABELS` | Turkish label per feature, used in the daily alert message |
 
@@ -526,6 +603,7 @@ is optional and documented there):
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram delivery |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TO`, `SMTP_STARTTLS` | email delivery |
 | `ALERT_WEBHOOK_URL` | Slack / Discord incoming webhook |
+| `MAX_QUARANTINE_RATIO`, `QUARANTINE_WARN_RATIO`, `RUN_QUALITY_PATH` | unusable-row handling — see [Unusable rows](#unusable-rows-quarantine) |
 | `TEST_DATABASE_URL` | read only by the test suite — a **throwaway** database for the 9 DB tests, which truncate both tables before every test. Deliberately not `DATABASE_URL` |
 
 `.env` is gitignored. Never commit it — it holds the database password, the API key
@@ -647,6 +725,43 @@ scheduled command and not an endpoint: anything that could trigger it over HTTP 
 a double-clicked dashboard button included — would create a new "previous run" and
 mark every student `still_at_risk`. `POST /run-daily-pipeline` was removed for that
 reason (B-08). Use `GET /students` for display.
+
+### Unusable rows (quarantine)
+
+One student's row missing one value used to fail the **whole** run. With 25.000
+students and an upstream job that half-finished, that means nobody is scored, nobody
+is messaged, and the outage shows up as a `400` in a cron log. Since B-28 such rows
+are *quarantined*: skipped, counted, and reported.
+
+**Where the line is.** Two kinds of missing value, and only one of them costs the
+row:
+
+| | Example | What happens |
+|---|---|---|
+| **Missing, and handled** | `weekly_study_hours_actual`, `satisfaction_survey_score` | the `*_missing` flag records that it was absent, the plan-type median learned at training fills it, and the row is scored. The absence is itself a feature the model was trained on. |
+| **Unusable** | any other raw feature column (`grade`, `plan_type`, `days_since_last_contact`, `monthly_fee_try`, …) or a null `student_id` | nothing can fill it, `drop_unimputable_rows` drops such rows at training time, and an alert with no id is an alert nobody can act on. The row is quarantined. |
+
+The exact set is `src/data/features.SERVING_REQUIRED_COLUMNS` — every raw model
+input except the two the imputer fills — so adding a feature moves this line
+automatically instead of needing a second list kept in step.
+
+**What you see.** The count is logged (columns and counts, never a student id —
+B-12), returned as `skipped_count` by `GET /students`, and written to
+`RUN_QUALITY_PATH` for the notification step. At or above `QUARANTINE_WARN_RATIO`
+(default 1%) it also appears as one line in the daily message and as an ops alert:
+
+```
+Not: veri kaynağındaki 12 kayıt eksik bilgi içerdiği için (4%) bu koşuda
+değerlendirilemedi. Toplam 300 kaydın 288 tanesi puanlandı.
+```
+
+**When it still fails.** A quarantine that swallows more than
+`MAX_QUARANTINE_RATIO` (default 10%) of the input raises, as does a run where *no*
+row is usable, as does an entirely empty input. A few broken rows are normal
+upstream noise; half the school is a broken export, and a message built from the
+surviving half is indistinguishable from a quiet day. Raise
+`MAX_QUARANTINE_RATIO` only after looking at the logged column counts — they name
+the export that half-finished.
 
 ---
 
