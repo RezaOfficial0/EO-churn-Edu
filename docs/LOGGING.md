@@ -34,6 +34,13 @@ deliberately does not, and how long a deployment may keep it.
   to forward to a third-party log service without review.
 - **Row and column counts**, thresholds, timings, and the number of at-risk students
   per run. None of these identify anyone.
+- **The tail of a failed run's output, forwarded to the operator channel** (B-14).
+  When the scheduler's chain fails it sends the last ~1200 characters of what the
+  step printed to `OPS_TELEGRAM_CHAT_ID` / `OPS_ALERT_WEBHOOK_URL`. Credentials are
+  redacted (bot token, webhook URL, API key, `DATABASE_URL`), but a pandas or
+  CatBoost traceback can quote a *data value* - so that destination is a third-party
+  log service in the sense of this page. Keep it to a chat only we are in, and treat
+  it under the same 30 days as the container log.
 
 ## Retention
 
@@ -41,6 +48,8 @@ deliberately does not, and how long a deployment may keep it.
 |---|---|---|
 | API access + application log | container stdout, collected by whatever runs the container | **30 days**, then delete |
 | daily pipeline / notification runs | same | **30 days**, then delete |
+| scheduler (daily run + heartbeat + failure reports) | same, plus the operator chat / webhook when one is configured | **30 days**, then delete — including the operator chat |
+| scheduler state (`SCHEDULER_STATE_PATH`) | the `scheduler_state` volume | last successful / last failed run only, overwritten each run. Holds the same redacted failure tail; no student data |
 | the alert log (`alerts` table / `daily_alerts.csv`) | the database or `data/` | **not a log** — it is the record of what the system told mentors, and it is covered by the data-retention decision for student data, not by this page |
 
 Thirty days is long enough to investigate an incident reported a few weeks late and

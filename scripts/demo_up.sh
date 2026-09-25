@@ -38,6 +38,10 @@ API_PORT="$(env_get API_PORT 8000)"
 DASHBOARD_PORT="$(env_get DASHBOARD_PORT 5173)"
 DB_PORT="$(env_get DB_PORT 5432)"
 POSTGRES_USER="$(env_get POSTGRES_USER postgres)"
+# Sadece ekrana yazmak için: zamanlayıcı servisinin saatini demo sonunda
+# söylüyoruz ki "günlük koşuyu kim tetikliyor" sorusu açıkta kalmasın (B-14).
+RUN_AT="$(env_get RUN_AT 09:00)"
+SCHEDULER_TIMEZONE="$(env_get SCHEDULER_TIMEZONE Europe/Istanbul)"
 
 FILES=(--env-file .env.docker -f docker-compose.yml)
 if [ -d ../Eo-Churn-Dashboard-demo-Edu ]; then
@@ -47,8 +51,25 @@ else
   echo "-> dashboard klasörü yok, sadece backend başlatılıyor"
 fi
 
-echo "-> imajlar kuruluyor ve servisler başlatılıyor (ilk sefer birkaç dakika sürer)"
-docker compose "${FILES[@]}" up -d --build
+echo "-> imajlar kuruluyor (ilk sefer birkaç dakika sürer)"
+docker compose "${FILES[@]}" build
+
+# B-17: imaj artık root değil `app` (uid 10001) olarak koşuyor. Zamanlayıcının
+# state volume'ü B-17'DEN ÖNCE oluşturulmuşsa içeriği root'a ait, `app` içine
+# yazamaz ve scheduler her açılışta PermissionError ile çıkıp restart döngüsüne
+# girer. Volume'un sahipliğini bir kez düzeltiyoruz.
+#
+# Sadece MEVCUT bir volume için gerekli: yeni bir volume'ü Docker imajdaki
+# /app/state dizininin sahipliğiyle oluşturuyor, o da zaten app. Komut idempotent,
+# her çalıştırmada zararsız.
+if docker volume inspect eo-churn_scheduler_state >/dev/null 2>&1; then
+  docker compose "${FILES[@]}" run --rm --no-deps --user 0 --entrypoint sh api \
+    -c 'chown -R app:app /app/state' >/dev/null 2>&1 \
+    || echo "   uyarı: /app/state sahipliği düzeltilemedi - zamanlayıcı yazamazsa"
+fi
+
+echo "-> servisler başlatılıyor"
+docker compose "${FILES[@]}" up -d
 
 echo -n "-> API hazır olması bekleniyor "
 for _ in $(seq 1 60); do
@@ -60,6 +81,8 @@ for _ in $(seq 1 60); do
     echo "   API       http://localhost:${API_PORT}/docs"
     [ -d ../Eo-Churn-Dashboard-demo-Edu ] && echo "   Dashboard http://localhost:${DASHBOARD_PORT}"
     echo "   Postgres  localhost:${DB_PORT} (kullanıcı ${POSTGRES_USER})"
+    echo "   Zamanlayıcı: günlük koşu ${RUN_AT} ${SCHEDULER_TIMEZONE}"
+    echo "                log:  docker compose --env-file .env.docker logs -f scheduler"
     echo
     echo "   Günlük listeyi sıfırlamak için:  ./scripts/demo_reset.sh"
     exit 0

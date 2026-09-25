@@ -17,6 +17,8 @@ from email.message import EmailMessage
 from config import (
     API_KEY,
     ALERT_WEBHOOK_URL,
+    DATABASE_URL,
+    OPS_ALERT_WEBHOOK_URL,
     SMTP_FROM,
     SMTP_HOST,
     SMTP_PASSWORD,
@@ -49,7 +51,21 @@ _TOKEN_SHAPED = re.compile(r"\d{5,}:[A-Za-z0-9_-]{20,}")
 
 def redact(text: str) -> str:
     """<tek cümle: ne yapar, neden var>"""
-    for secret in (TELEGRAM_BOT_TOKEN, SMTP_PASSWORD, API_KEY, ALERT_WEBHOOK_URL):
+    for secret in (
+        TELEGRAM_BOT_TOKEN,
+        SMTP_PASSWORD,
+        API_KEY,
+        ALERT_WEBHOOK_URL,
+        # The ops webhook (B-14) is a credential exactly like the customer one, and
+        # it appears in the errors of the alert that reports a failed run - the one
+        # error path most likely to be pasted into a chat by whoever is debugging.
+        OPS_ALERT_WEBHOOK_URL,
+        # The connection string carries the database password. SQLAlchemy masks it in
+        # its own messages, but the scheduler now forwards a failed run's raw output
+        # to an operator channel (B-14), and that output is whatever the child
+        # printed - a psycopg2 error, a traceback, or a print() somebody added.
+        DATABASE_URL,
+    ):
         if secret == None or len(secret) < 8:
             continue
         text = text.replace(secret, REDACTED)
@@ -84,8 +100,16 @@ def _post_json(url: str, payload: dict) -> None:
 
 
 # --- Telegram ---------------------------------------------------------------
-def send_telegram(text: str) -> None:
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+def send_telegram(text: str, *, chat_id: str | None = None) -> None:
+    """Post to TELEGRAM_CHAT_ID, or to `chat_id` when one is given.
+
+    The override exists for the operator channel (B-14): a failed run has to reach
+    US, not the customer's group, and it is the same bot token either way - only
+    the destination differs. Defaulting to the customer chat keeps every existing
+    caller unchanged.
+    """
+    chat = chat_id or TELEGRAM_CHAT_ID
+    if not TELEGRAM_BOT_TOKEN or not chat:
         raise NotConfigured(
             "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must both be set (see .env.example)"
         )
@@ -101,9 +125,9 @@ def send_telegram(text: str) -> None:
         f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
         # No parse_mode: the message is plain text, and student ids or feature
         # labels containing _ or * would break Markdown parsing.
-        {"chat_id": TELEGRAM_CHAT_ID, "text": text, "disable_web_page_preview": True},
+        {"chat_id": chat, "text": text, "disable_web_page_preview": True},
     )
-    logger.info("telegram: message sent to chat %s", TELEGRAM_CHAT_ID)
+    logger.info("telegram: message sent to chat %s", chat)
 
 
 # --- Email ------------------------------------------------------------------
@@ -138,8 +162,10 @@ def send_email(subject: str, text: str, html: str | None = None) -> None:
 
 
 # --- Webhook (Slack / Discord / anything taking {"text": ...}) --------------
-def send_webhook(text: str) -> None:
-    if not ALERT_WEBHOOK_URL:
+def send_webhook(text: str, *, url: str | None = None) -> None:
+    """Post to ALERT_WEBHOOK_URL, or to `url` when one is given (the ops hook, B-14)."""
+    target = url or ALERT_WEBHOOK_URL
+    if not target:
         raise NotConfigured("ALERT_WEBHOOK_URL must be set (see .env.example)")
-    _post_json(ALERT_WEBHOOK_URL, {"text": text})
+    _post_json(target, {"text": text})
     logger.info("webhook: message posted")

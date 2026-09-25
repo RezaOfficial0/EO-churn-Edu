@@ -150,6 +150,46 @@ PRECISION_AT_K = 20
 # A single column with more than this fraction of nulls fails validation.
 MAX_NULL_RATIO_PER_COLUMN = 0.05
 
+# --- Row-level quarantine (B-28) --------------------------------------------
+# A null in ONE student's row used to fail the whole run: `require_no_nulls` is a
+# frame-level gate, so 24.999 scorable students got no message because an upstream
+# job left one row half-written. A batch scorer's correct behaviour is to score the
+# good rows and report the rejected ones, which is what "quarantine" means here.
+#
+# Where the line is (see src/data/features.SERVING_REQUIRED_COLUMNS):
+#   - a null in weekly_study_hours_actual or satisfaction_survey_score is MISSING
+#     DATA the recipe handles - the `*_missing` flag records it and the plan-type
+#     median learned at training fills it. The row is scored, and the fact that the
+#     value was absent is itself a feature the model was trained on.
+#   - a null anywhere else in the raw feature columns, or in student_id, makes the
+#     row UNUSABLE: nothing can fill it, training itself dropped such rows
+#     (`drop_unimputable_rows`), and scoring it would feed CatBoost a shape it never
+#     saw. The row is quarantined.
+#
+# Two ratios, because "a few broken rows" and "half the school is missing" are
+# different events and only one of them is an outage:
+#   QUARANTINE_WARN_RATIO - at or above this share, the skipped rows are named in
+#                           the daily message and an ops alert goes out.
+#   MAX_QUARANTINE_RATIO  - above this share the run FAILS instead of sending a
+#                           reassuring half-empty message. A run where every row is
+#                           unusable fails whatever this is set to.
+# `... or "0.10"`, not a get() default, for the same reason as the scheduler values
+# below: a variable present but empty in .env would be float("") -> ValueError at
+# import time, in every process that imports config.
+MAX_QUARANTINE_RATIO = float(os.environ.get("MAX_QUARANTINE_RATIO", "").strip() or "0.10")
+QUARANTINE_WARN_RATIO = float(
+    os.environ.get("QUARANTINE_WARN_RATIO", "").strip() or "0.01"
+)
+
+# Where the last run's quality summary (counts only - never a student id) is left
+# for the notification step to read. Two processes, one fact: the pipeline knows how
+# many rows it skipped, and `scripts/send_daily_alerts.py`, which runs afterwards
+# and reads the alert log rather than the data, is what puts it in the message.
+# Same directory as the scheduler state, i.e. a named volume in compose.
+RUN_QUALITY_PATH = os.environ.get("RUN_QUALITY_PATH", "").strip() or str(
+    BASE_DIR / "state" / "last_run_quality.json"
+)
+
 
 # --- Explanations -------------------------------------------------------
 SHAP_TOP_N_FEATURES = 3
@@ -433,6 +473,59 @@ SMTP_STARTTLS = os.environ.get("SMTP_STARTTLS", "true").lower() not in {"false",
 # Webhook that scripts/send_daily_alerts.py posts new at-risk students to
 # (Slack / Discord "incoming webhook" URL, or anything accepting {"text": ...}).
 ALERT_WEBHOOK_URL = os.environ.get("ALERT_WEBHOOK_URL") or None
+
+
+# --- Scheduler and operator alerting (B-14) ---------------------------------
+# The daily run used to be a cron line the customer had to add by hand; it is now
+# `scripts/scheduler.py` in its own compose service. See src/scheduling.py for the
+# parsing and the next-run computation, and README "Zamanlama".
+
+# Local time of day the run is due, and the zone that "local" means. The zone is
+# part of the contract, not a detail: the container's clock is UTC, so 09:00
+# without a zone would reach a mentor in Istanbul at noon.
+RUN_AT = os.environ.get("RUN_AT", "").strip() or "09:00"
+SCHEDULER_TIMEZONE = (
+    os.environ.get("SCHEDULER_TIMEZONE", "").strip() or "Europe/Istanbul"
+)
+
+# Which weekdays the run is due on (Mon=1 .. Sun=7); empty means every day.
+# "1-5" reproduces the weekday-only cron line this service replaced - raise
+# SCHEDULER_HEARTBEAT_HOURS with it, or Monday morning looks like an outage.
+RUN_DAYS = os.environ.get("RUN_DAYS", "").strip()
+
+# No successful run in this many hours -> an alert to the OPS channel. This is the
+# one check that catches "the whole thing has been dead for three days", which is
+# invisible by construction otherwise: a silent system and a healthy one that
+# happens to have nobody at risk look identical from outside.
+# `... or "24"`, not a get() default: a variable PRESENT BUT EMPTY in .env (which is
+# how every template ships an optional setting) would otherwise be float("") -> a
+# ValueError at import time, in every process that imports config.
+SCHEDULER_HEARTBEAT_HOURS = float(
+    os.environ.get("SCHEDULER_HEARTBEAT_HOURS", "").strip() or "26"
+)
+
+# A single step (the pipeline, or the alert send) may not take longer than this.
+# Without a timeout one hung subprocess - a Postgres connection that never answers
+# is the realistic one - would make the scheduler sleep forever and look alive:
+# no run, no failure, no alert. On a timeout the step is killed and reported.
+SCHEDULER_RUN_TIMEOUT_SECONDS = float(
+    os.environ.get("SCHEDULER_RUN_TIMEOUT_SECONDS", "").strip() or "3600"
+)
+
+# Where the last-success / last-failure record lives. A file, because the schema
+# has no table that may hold it (the `runs` table is B-04) - see src/scheduling.py.
+# In compose this path is a named volume, so it survives a restart and a rebuild.
+SCHEDULER_STATE_PATH = os.environ.get("SCHEDULER_STATE_PATH", "").strip() or str(
+    BASE_DIR / "state" / "scheduler_state.json"
+)
+
+# --- Operator (ops) alert channel -------------------------------------------
+# Deliberately SEPARATE from NOTIFY_CHANNELS above. A failed run is our problem
+# and must not appear in the customer's group: "pipeline crashed with KeyError" is
+# not a message a mentor can act on, and it is exactly the message that destroys
+# confidence in the product. Same bot, different chat.
+OPS_TELEGRAM_CHAT_ID = _env_secret("OPS_TELEGRAM_CHAT_ID") or None
+OPS_ALERT_WEBHOOK_URL = _env_secret("OPS_ALERT_WEBHOOK_URL") or None
 
 
 

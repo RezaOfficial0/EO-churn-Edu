@@ -18,9 +18,11 @@ Recipe (verified to reproduce `data/updated_data.csv` from the raw file exactly)
                              plan_type group (on training data)
   4. apply_imputation      - fill the missing values with the learned medians
 
-At serving time steps 1 is skipped (never drop a customer's row - `validate()` rejects
-a row that is missing an unimputable column instead) and step 3 is skipped (the medians
-learned at training time are reused, and travel with the model in model_meta.json).
+At serving time step 1 is skipped here and step 3 is skipped (the medians learned at
+training time are reused, and travel with the model in model_meta.json). The rows step
+1 would have dropped are handled one level up instead: `pipeline/daily_pipeline.py`
+quarantines them (B-28) using SERVING_REQUIRED_COLUMNS below, so one unusable row
+costs that row and not the whole run.
 """
 import logging
 
@@ -64,6 +66,23 @@ RAW_FEATURE_COLUMNS += [
     for sources in DERIVED_COLUMNS.values()
     for source in sources
     if source not in RAW_FEATURE_COLUMNS
+]
+
+# The raw columns a row must actually HAVE A VALUE IN to be scorable (B-28).
+#
+# Everything in RAW_FEATURE_COLUMNS except the two the recipe can fill: a null in
+# `weekly_study_hours_actual` or `satisfaction_survey_score` is recorded by its
+# `*_missing` flag and filled with the median learned at training, so the row is
+# still a row the model knows how to score. A null in any other column has nothing
+# behind it - `drop_unimputable_rows` is the training-time counterpart, and this is
+# the same decision made per row at serving time instead of per frame.
+#
+# Broader than UNIMPUTABLE_REQUIRED on purpose. That list is what the ONE raw file
+# we trained on happened to have nulls in; incoming customer data may have them
+# anywhere, and a null `plan_type` or `grade` reaches CatBoost as an unseen category
+# rather than as an error.
+SERVING_REQUIRED_COLUMNS = [
+    column for column in RAW_FEATURE_COLUMNS if column not in MISSING_FLAG_COLUMNS
 ]
 
 

@@ -95,7 +95,7 @@ def scoring_kwargs():
 def test_next_real_run_shows_both_sections_and_trends(tmp_path, scoring_kwargs):
     alerts_path = str(tmp_path / "daily_alerts.csv")
 
-    today = score_students(**scoring_kwargs)
+    today = score_students(**scoring_kwargs).at_risk
     assert len(today) >= 2, "the sample must have at least two at-risk students"
 
     history = seed.make_history(today, scoring_kwargs["threshold"])

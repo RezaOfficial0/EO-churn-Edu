@@ -1,19 +1,66 @@
+# What must NOT reach the image. Every line here is a thing that either leaks or
+# bloats: `COPY . .` copies the build context as it is on the machine that runs
+# the build, and an image, once it leaves that machine, cannot be called back.
+
+# --- Version control, editors, caches ---------------------------------------
 .git
+.github
 .venv
 .idea
 .vscode
+.DS_Store
 __pycache__
 *.pyc
-.DS_Store
+.pytest_cache
+.ruff_cache
 catboost_info
-tests
-.github
-data/daily_alerts.csv
-
-# Sırlar imaja girmesin. Ayarlar compose'a env_file ile veriliyor; imajın içine
-# kopyalanırsa parola ve bot token'ı imajı alan herkeste olur.
-.env
-.env.docker
-metrics
 dist
 node_modules
+
+# --- Secrets ----------------------------------------------------------------
+# A GLOB, not the two names we happen to use today. `.env` and `.env.docker` were
+# listed and `.env.local` / `.env.staging` / `.env.prod.bak` were not - those went
+# into the image, and `docker history` / `docker cp` hands the SMTP password and the
+# bot token to anyone who has it. Settings are passed at RUN time (compose
+# `env_file`), so no .env belongs in a layer, examples included.
+.env*
+
+# --- Student data -----------------------------------------------------------
+# data/ is IGNORED WHOLESALE and the one file the container genuinely needs is
+# re-included below. The deny-list version of this rule is what the audit found:
+# .gitignore commits `data/*.csv` on purpose (so `git clone` runs immediately), so
+# on the day a real customer export is dropped into data/, every image built from
+# that checkout carries those student records - and nobody would have edited this
+# file first. An allow-list makes the safe answer the default for a new file.
+# `data/*` + `!` rather than `data/`: the documented Docker idiom for "exclude the
+# contents, keep one file", and the one that does not depend on how the builder
+# treats an excluded directory - this re-include is load-bearing for the demo.
+data/*
+# The daily serving sample: `scripts/load_daily_students.py` (the init container)
+# reads it, and DATA_SOURCE=csv serves from it. Everything else in data/, including
+# the alert log and any real export, stays out.
+!data/daily_data.csv
+
+# The training export and the engineered frame stay out: nothing in the serving
+# image reads them (training runs on a workstation and ships the model in
+# saved_models/), and they are the two largest, most personal files in the repo.
+# `python running_train_pipeline.py` therefore does not work inside the container -
+# deliberately. See README "Container hijyeni".
+
+# Regenerated per run; the CSV-mode alert log is written into a directory the
+# container owns at runtime and the scheduler's state lives on a volume.
+metrics
+state
+
+# --- Not part of the product ------------------------------------------------
+# Experiments (they import config and would be shipped as if they were supported),
+# notebooks and their checkpoints, and any model weights format that is not the
+# CatBoost file the API loads.
+RnD
+notebooks
+*.ipynb
+.ipynb_checkpoints
+*.pt
+*.pth
+tests
+docs

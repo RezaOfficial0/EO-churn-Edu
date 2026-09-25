@@ -8,7 +8,7 @@
 #
 #     docker compose -f docker-compose.yml -f docker-compose.dashboard.yml up
 #
-# Retention servisi hazır olduğunda buraya dördüncü bir blok olarak eklenecek -
+# Retention servisi hazır olduğunda buraya beşinci bir blok olarak eklenecek -
 # servis adlandırması, ağ ve env konvansiyonu ona göre kuruldu.
 
 name: eo-churn
@@ -60,6 +60,20 @@ services:
       sh -c "python scripts/init_db.py &&
              python scripts/load_daily_students.py &&
              python -m pipeline.daily_pipeline"
+    volumes:
+      # Aynı /app/state: bu servis de günlük koşuyu çalıştırıyor, yani karantina
+      # sayacını (B-28) o yazıyor. Volume olmadan dosya container ile birlikte
+      # siliniyor ve zamanlayıcının gönderdiği mesaj atlanan satırlardan
+      # habersiz kalıyor.
+      - scheduler_state:/app/state
+    healthcheck:
+      # B-17 ile HEALTHCHECK imaja girdi (müşteri `docker run`/k8s ile koşarsa
+      # liveness sinyali olsun diye) ve o kontrol API için tanımlı. Bu servis bir
+      # sunucu değil, bir kez koşup çıkan bir komut: devre dışı bırakılmazsa
+      # `docker compose ps` onu boşuna (unhealthy) gösterir. `init`in bitip
+      # bitmediğine bakan şey çıkış kodu (service_completed_successfully), sağlık
+      # durumu değil.
+      disable: true
     restart: "no"
 
   # --- API -------------------------------------------------------------------
@@ -74,13 +88,31 @@ services:
       # B-07: the API refuses to start unauthenticated unless it is provably local.
       # The port below is published on 127.0.0.1 only, so on this machine that claim
       # is true; change either line and the other has to change with it.
+      #
+      # The dashboard's proxy reaches this container over the compose network
+      # instead of the published port (D-09), which does not widen the claim: that
+      # network is local to this machine too. What it does mean is that the
+      # no-auth demo mode trusts every container on the network, so set a real
+      # API_KEY the moment anything but this stack shares it.
       API_BIND_HOST: 127.0.0.1
     ports:
       # Loopback only. Öğrenci kayıtları ve 24 feature bu porttan dönüyor; demo
       # için API_KEY'siz çalışmanın koşulu portun dışarı açık OLMAMASI.
       # Başka bir makineden erişmen gerekiyorsa .env.docker'da API_KEY set et ve
       # burayı "${API_PORT:-8000}:8000" yap.
+      #
+      # D-09'dan sonra DASHBOARD bu yayına ihtiyaç duymuyor: tarayıcı aynı
+      # origin'e (/api) gidiyor ve dashboard'un nginx'i API'ye compose ağı
+      # üzerinden, "api" adıyla ulaşıyor. Kalan tek sebep host tarafı: curl,
+      # /docs ve demo_up.sh'in /health yoklaması. İkisinden de vazgeçebiliyorsan
+      # satırı tamamen yorum yapabilirsin - dashboard çalışmaya devam eder.
       - "127.0.0.1:${API_PORT:-8000}:8000"
+    volumes:
+      # API'nin kendisi buraya yazmıyor (hiçbir endpoint koşu yapmıyor, B-08), ama
+      # demo_reset.sh günlük koşuyu `compose run --rm --no-deps api` ile bu imajda
+      # çalıştırıyor. Volume burada da bağlı olmasa o koşunun karantina sayacı
+      # (B-28) geçici container'la birlikte kaybolurdu.
+      - scheduler_state:/app/state
     healthcheck:
       # status == "ok", not just HTTP 200: /health answers 200 with
       # {"status": "degraded"} when the model, the explainer, the calibrator or the
@@ -95,5 +127,59 @@ services:
       start_period: 45s
     restart: unless-stopped
 
+  # --- Zamanlayıcı (B-14) ----------------------------------------------------
+  # Günlük koşu artık müşterinin elle eklediği bir cron satırı değil: bu servis
+  # RUN_AT / SCHEDULER_TIMEZONE / RUN_DAYS'e bakıp sırası gelince
+  #
+  #     python -m pipeline.daily_pipeline  &&  python scripts/send_daily_alerts.py
+  #
+  # zincirini çalıştırıyor. `&&` kasıtlı: koşu başarısız olursa müşteriye YARIM
+  # mesaj gitmiyor. Neden hazır bir zamanlayıcı imajı (ofelia/cron) değil de bu
+  # script - scripts/scheduler.py'nin başındaki açıklamada.
+  #
+  # api ile AYNI imaj: aynı model dosyaları, aynı config.py, aynı bağımlılıklar.
+  # Ayrı bir container olması ise istenen şey - API'nin restart'ı koşuyu
+  # kaçırtmıyor, koşunun CPU'su isteklere yansımıyor.
+  #
+  # HTTP'ye hiç dokunmuyor (veritabanı ve modele doğrudan gidiyor), yani
+  # API_KEY / EOAI_ALLOW_NO_AUTH semantiği (B-07) bu servisi ilgilendirmiyor.
+  scheduler:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+      # init bir kez koşup şemayı ve günlük veriyi hazırlıyor; zamanlayıcı
+      # bitmesini bekliyor ki ilk koşusu boş bir veritabanına düşmesin.
+      init:
+        condition: service_completed_successfully
+    env_file: .env.docker
+    environment:
+      DATA_SOURCE: db
+    command: ["python", "scripts/scheduler.py"]
+    volumes:
+      # Son başarılı koşunun zaman damgası. Named volume olması heartbeat'in
+      # tek şartı: container yeniden kurulduğunda (`up --build`) dosya kalmalı,
+      # yoksa her rebuild "hiç koşu yok" gibi görünür. `runs` tablosu (B-04)
+      # geldiğinde bu dosyanın yerini o alacak; src/scheduling.py'ye bak.
+      - scheduler_state:/app/state
+    healthcheck:
+      # Ops kanalı YOKSA arızayı görünür kılan şey bu: son koşu başarısızsa ya da
+      # SCHEDULER_HEARTBEAT_HOURS içinde başarılı koşu yoksa `docker compose ps`
+      # servisin yanına (unhealthy) yazıyor. Sorgu ucuz (tek bir JSON dosyası),
+      # ama 5 dakikada bir yeterli - bu bir saatlik değil günlük bir sinyal.
+      test: ["CMD", "python", "scripts/scheduler.py", "--healthcheck"]
+      interval: 5m
+      timeout: 30s
+      retries: 1
+      # İlk koşunun zamanı gelene kadar "henüz koşu yok" hali normaldir; bu pay
+      # container'ın açılışta unhealthy damgası yemesini engelliyor.
+      start_period: 2m
+    # Beklenmedik bir çökme (ya da hatalı RUN_AT'in kasıtlı non-zero çıkışı)
+    # görünür olsun: container yeniden başlar, yine çıkar ve `ps` sürekli
+    # restart eden bir servis gösterir. Sessizce ayakta kalıp hiç ateşlememekten
+    # iyidir.
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  scheduler_state:

@@ -3,7 +3,8 @@
 For the frontend. You do not need to read the code; while the server is running the
 interactive Swagger UI at `http://127.0.0.1:8000/docs` lets you try every endpoint —
 it is behind the API key like everything else, so a browser needs something that
-adds the `X-API-Key` header.
+adds the `X-API-Key` header (the dashboard has one; see
+[Reaching the API from a browser](#reaching-the-api-from-a-browser)).
 
 ## Running it
 
@@ -28,10 +29,44 @@ local development: `EOAI_ALLOW_NO_AUTH=1` together with a loopback `API_BIND_HOS
 (e.g. `127.0.0.1`) starts an unauthenticated server and logs a warning. Any other
 combination is a startup error, not a warning.
 
+## Reaching the API from a browser
+
+A browser must not hold the key. Anything a page can read, anyone who opens
+devtools can read, so a key shipped in a JavaScript bundle is not authentication —
+it is a published secret.
+
+The supported pattern is a **reverse proxy in front of the page**, adding the
+header server-side. The dashboard does exactly this: it is served by nginx, which
+proxies its own `/api/` prefix to this API and injects `X-API-Key` from a runtime
+environment variable.
+
+```
+browser ──/api/students──▶ dashboard nginx ──/students + X-API-Key──▶ this API
+```
+
+What that means for a frontend calling this contract:
+
+- **the base URL is a path, not an address.** The dashboard's `VITE_API_BASE`
+  defaults to `/api`, so every request goes to the page's own origin. Strip the
+  prefix in the proxy (`proxy_pass http://api:8000/;` — the trailing slash does
+  it), and the paths in this document are what the API receives.
+- **the API port does not have to be published.** The proxy runs next to the API,
+  so it can use the internal address (`http://api:8000` in compose). Publishing
+  the port is then only for `curl` and `/docs`.
+- **`/health` still needs no key**, but sending one is harmless, so a proxy can
+  inject the header unconditionally.
+- **an empty key means no header.** nginx omits a header whose value is an empty
+  string, which is the local demo mode where this API runs with
+  `EOAI_ALLOW_NO_AUTH=1`. The same proxy configuration works in both modes.
+
 ## CORS
 
 Allowed browser origins come from the `ALLOWED_ORIGINS` environment variable
 (comma-separated). The default is `http://localhost:5173, http://127.0.0.1:5173`.
+
+A same-origin frontend behind the proxy above sends **no cross-origin request at
+all**, so this list does not apply to it — `ALLOWED_ORIGINS` only matters for a
+browser client served from a different origin than the API.
 
 ## Data source
 
@@ -144,6 +179,12 @@ they are never model inputs — so they can be `null` when the daily data has no
 value. A null there is missing data and arrives as JSON `null`; it used to produce a
 `500` on this endpoint and on `GET /students`.
 
+A `400` with `"row cannot be scored: N required value(s) missing"` means this one
+student's row has a hole nothing can fill — the same rule `GET /students`
+quarantines a row by (B-28). The count is all the body carries; which columns is in
+the server log, because the body is rendered by clients and logged by proxies.
+Unlike a batch, a single named student has no "score the rest" to fall back on.
+
 ## The day's run (no longer an endpoint)
 
 `POST /run-daily-pipeline` **has been removed.** It was the only write on the HTTP
@@ -177,6 +218,7 @@ training. Pass `?threshold=0` to get every student scored, sorted most-risky fir
 ```json
 {
   "count": 9,
+  "skipped_count": 0,
   "threshold": 0.53,
   "students": [
     {
@@ -197,6 +239,22 @@ training. Pass `?threshold=0` to get every student scored, sorted most-risky fir
 There is no `status` field. `new` / `still_at_risk` is defined relative to the
 previous *recorded* run, and this endpoint records nothing, so it would have no
 meaningful value here.
+
+`skipped_count` (B-28) is how many rows of today's data could **not** be scored: a
+row missing a value nothing can impute (a null `grade`, `plan_type`,
+`days_since_last_contact`, …, or a null `student_id`) is quarantined instead of
+failing the whole request. A null `weekly_study_hours_actual` or
+`satisfaction_survey_score` is *not* one of them — the imputer fills those and the
+`*_missing` flags record that it did, so those rows are scored normally.
+
+`count` therefore counts the students **at or above the threshold**, and
+`count + (scored but below the threshold) + skipped_count` is the whole file. A
+dashboard should show `skipped_count` when it is not 0: the list is quietly shorter
+otherwise, and nothing else on the HTTP surface says why. The rejected rows
+themselves are not returned (they are student records) and no student id appears in
+any log line about them. Above `MAX_QUARANTINE_RATIO` (default 10% of the input),
+or when no row at all is usable, the endpoint returns `400` instead — a shorter list
+is acceptable, a list built from half a broken export is not.
 
 This is the endpoint for displaying students. It is also the only one that scores a
 whole cohort, now that the write endpoint is gone.
