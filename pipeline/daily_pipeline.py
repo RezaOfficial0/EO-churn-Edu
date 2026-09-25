@@ -3,8 +3,9 @@
 The run is split into two halves on purpose:
 
   - `score_students()` is **pure**: it reads the daily data and returns the at-risk
-    students. It writes nothing. `GET /students` calls only this, so a dashboard
-    can refresh as often as it likes without touching the alert log.
+    students, the rows it could not score, and a count of them. It writes nothing.
+    `GET /students` calls only this, so a dashboard can refresh as often as it likes
+    without touching the alert log.
   - `log_alerts()` is the **write** half: it marks each student `new` /
     `still_at_risk` against the previous run and appends the run to the alert log.
 
@@ -16,9 +17,15 @@ and the standalone entry point call:
 Whether "the daily data" and "the alert log" mean CSV files or Postgres tables is
 decided by `config.DATA_SOURCE`; this module only talks to the dispatchers in
 `src.data.loader`.
+
+Unusable rows (B-28) are skipped, not fatal: one student whose row is missing a value
+nothing can impute costs that student, not the other 24.999. The run still fails
+loudly when the share of skipped rows crosses `MAX_QUARANTINE_RATIO`, or when nothing
+survived - see `src.data.validation.check_quarantine`.
 """
 import logging
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 import pandas as pd
 
@@ -29,23 +36,50 @@ from config import (
     FEATURES,
     MODEL_META_PATH,
     MODEL_PATH,
+    RUN_QUALITY_PATH,
     SHAP_TOP_N_FEATURES,
     STUDENT_INFO,
 )
-from src.data.features import RAW_FEATURE_COLUMNS, build_serving_frame
+from src.data.features import (
+    RAW_FEATURE_COLUMNS,
+    SERVING_REQUIRED_COLUMNS,
+    build_serving_frame,
+)
 from src.data.loader import append_to_alert_log, load_daily_students, previous_at_risk_ids
 from src.data.preprocess import daily_process
-from src.data.validation import require_no_nulls, validate
+from src.data.run_quality import write_report
+from src.data.validation import (
+    QuarantineReport,
+    check_quarantine,
+    quarantine_unusable_rows,
+    require_no_nulls,
+    validate,
+)
 from src.explainer.shap_explainer import create_explainer, explain_customers
 from src.logging_setup import configure_logging
 from src.model.calibrate import load_calibrator
 from src.model.load import check_meta_matches_config, load_meta, load_model
+from src.notifications.ops import send_ops_alert
 from src.predictions.predict import predict
 from src.serialization import to_native
 
 logger = logging.getLogger(__name__)
 
 _ID_COLUMN = STUDENT_INFO[0]
+
+
+class ScoringResult(NamedTuple):
+    """What one scoring pass produced.
+
+    A tuple so callers that want everything can unpack it in one line, named so the
+    ones that only want the list (`result.at_risk`) do not index into it. `quarantine`
+    holds counts only and is safe to log or persist; `rejected` holds real student
+    rows and is not (B-12) - it exists so a caller can hand them back to the customer.
+    """
+
+    at_risk: pd.DataFrame
+    rejected: pd.DataFrame
+    quarantine: QuarantineReport
 
 
 def score_students(
@@ -57,22 +91,36 @@ def score_students(
     threshold,
     calibrator=None,
     top_n=SHAP_TOP_N_FEATURES,
-) -> pd.DataFrame:
+) -> ScoringResult:
     """Score today's students and return the ones at or above `threshold`.
 
-    Read-only: no alert-log write, no `status` column. Columns returned are
-    `student_id`, `enrollment_date`, `churn_probability`, `top_reasons`,
-    `top_reasons_detail`, `features`, most-risky first.
+    Read-only: no alert-log write, no `status` column. Returns a `ScoringResult`
+    (`at_risk`, `rejected`, `quarantine`). `at_risk` columns are `student_id`,
+    `enrollment_date`, `churn_probability`, `top_reasons`, `top_reasons_detail`,
+    `features`, most-risky first.
+
+    Rows that cannot be scored are quarantined rather than failing the run (B-28);
+    `check_quarantine` still raises `DataValidationError` when too many were lost or
+    when none survived, so a broken export can never look like a quiet day.
 
     `daily_data_path` is used only when `DATA_SOURCE` is "csv"; in "db" mode the
     students come from the `daily_students` table and the path is ignored.
     """
     raw = load_daily_students(daily_data_path)
     # Raw data is allowed nulls in the columns we impute, so skip the null-ratio
-    # check here; require_no_nulls below is the real gate, after imputation.
-    validate(raw, STUDENT_INFO + RAW_FEATURE_COLUMNS, max_null_ratio=1.0)
+    # check here. This is the FRAME gate (missing columns, empty input, repeated
+    # ids) - everything it rejects is unusable as a whole, so it still stops the run.
+    raw = validate(raw, STUDENT_INFO + RAW_FEATURE_COLUMNS, max_null_ratio=1.0)
 
-    engineered = build_serving_frame(raw, imputation_values)
+    # The ROW gate. SERVING_REQUIRED_COLUMNS is every raw model input except the two
+    # the imputer fills, so what is left here is a row with a hole nothing can close.
+    usable, rejected = quarantine_unusable_rows(raw, SERVING_REQUIRED_COLUMNS)
+    quarantine = check_quarantine(len(raw), rejected)
+
+    engineered = build_serving_frame(usable, imputation_values)
+    # Unchanged, and now a bug detector rather than a data gate: every row-level null
+    # the recipe does not fill was removed above, so if this still fires the recipe
+    # and SERVING_REQUIRED_COLUMNS have drifted apart.
     require_no_nulls(engineered, FEATURES)
 
     customer_info, X = daily_process(engineered)
@@ -91,7 +139,7 @@ def score_students(
     # The feature values the model actually scored (flags computed, nulls imputed),
     # so the dashboard can show them next to the SHAP reasons.
     at_risk["features"] = [to_native(row.to_dict()) for _, row in risky_X.iterrows()]
-    return at_risk
+    return ScoringResult(at_risk=at_risk, rejected=rejected, quarantine=quarantine)
 
 
 def log_alerts(at_risk: pd.DataFrame, alerts_path=DAILY_ALERTS_PATH) -> pd.DataFrame:
@@ -116,9 +164,15 @@ def run_daily_pipeline(
     calibrator=None,
     top_n=SHAP_TOP_N_FEATURES,
     alerts_path=DAILY_ALERTS_PATH,
-) -> pd.DataFrame:
-    """A full daily run: score, then record it. Unchanged behaviour and response shape."""
-    at_risk = score_students(
+    quality_path=RUN_QUALITY_PATH,
+) -> ScoringResult:
+    """A full daily run: score, record it, and leave the quality summary behind.
+
+    Returns the same `ScoringResult` as `score_students`, with `status` added to
+    `at_risk`. The quality summary is written HERE and not in `score_students`,
+    because that one is called on every dashboard page load and must stay pure.
+    """
+    result = score_students(
         daily_data_path,
         model=model,
         explainer=explainer,
@@ -127,7 +181,12 @@ def run_daily_pipeline(
         calibrator=calibrator,
         top_n=top_n,
     )
-    return log_alerts(at_risk, alerts_path)
+    marked = log_alerts(result.at_risk, alerts_path)
+    # Counts only, for scripts/send_daily_alerts.py to put in the message. Written
+    # even when nothing was skipped: a stale file from a worse run yesterday must not
+    # be reported as today's.
+    write_report(quality_path, result.quarantine)
+    return result._replace(at_risk=marked)
 
 
 def _mark_new_or_repeat(at_risk: pd.DataFrame, alerts_path) -> pd.DataFrame:
@@ -156,7 +215,21 @@ def main() -> None:
         imputation_values=meta.get("imputation_values", {}),
         threshold=meta.get("chosen_threshold", 0.5),
     )
-    shown = result[[_ID_COLUMN, "churn_probability", "status", "top_reasons"]]
+    quarantine = result.quarantine
+    if quarantine.skipped:
+        print(
+            f"skipped {quarantine.skipped} of {quarantine.total} row(s) "
+            f"({quarantine.ratio:.1%}) that could not be scored: {quarantine.reasons}"
+        )
+    if quarantine.reportable:
+        # The operator channel, not the customer's group: "480 rows are missing
+        # days_since_last_contact" is a message for whoever can fix the export.
+        # Below the warn ratio this stays in the log - see QuarantineReport.reportable.
+        send_ops_alert(
+            f"günlük koşu {quarantine.skipped}/{quarantine.total} satırı atladı "
+            f"({quarantine.ratio:.1%}). Eksik kolonlar: {quarantine.reasons}"
+        )
+    shown = result.at_risk[[_ID_COLUMN, "churn_probability", "status", "top_reasons"]]
     print(shown.to_string(index=False) if len(shown) else "no students at or above the threshold")
 
 

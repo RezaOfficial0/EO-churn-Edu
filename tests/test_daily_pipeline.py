@@ -21,8 +21,11 @@ def _kwargs():
     )
 
 
-def _run(alerts_path):
-    return run_daily_pipeline(alerts_path=str(alerts_path), **_kwargs())
+def _run(alerts_path, **extra):
+    # quality_path into tmp_path: the run writes its quarantine summary there (B-28)
+    # and a test must not touch the repo's state/ directory.
+    extra.setdefault("quality_path", str(alerts_path.parent / "last_run_quality.json"))
+    return run_daily_pipeline(alerts_path=str(alerts_path), **extra, **_kwargs()).at_risk
 
 
 def test_second_run_marks_repeats_still_at_risk(tmp_path):
@@ -45,7 +48,7 @@ def test_score_students_writes_nothing(tmp_path):
     """`GET /students` calls this on every dashboard load - it must have no side effects."""
     alerts_path = tmp_path / "daily_alerts.csv"
 
-    scored = score_students(**_kwargs())
+    scored = score_students(**_kwargs()).at_risk
 
     assert not alerts_path.exists()
     assert "status" not in scored.columns
@@ -53,14 +56,14 @@ def test_score_students_writes_nothing(tmp_path):
         scored.columns
     )
     # Repeated scoring is stable, precisely because nothing was recorded in between.
-    again = score_students(**_kwargs())
+    again = score_students(**_kwargs()).at_risk
     pd.testing.assert_series_equal(scored["churn_probability"], again["churn_probability"])
 
 
 def test_log_alerts_is_the_only_writer(tmp_path):
     alerts_path = tmp_path / "daily_alerts.csv"
 
-    scored = score_students(**_kwargs())
+    scored = score_students(**_kwargs()).at_risk
     marked = log_alerts(scored, str(alerts_path))
 
     assert (marked["status"] == "new").all()
@@ -70,7 +73,7 @@ def test_log_alerts_is_the_only_writer(tmp_path):
 
 def test_score_students_matches_run_daily_pipeline(tmp_path):
     """Same students, same scores - the only difference is that one of them writes."""
-    scored = score_students(**_kwargs())
+    scored = score_students(**_kwargs()).at_risk
     recorded = _run(tmp_path / "daily_alerts.csv")
 
     assert list(scored["student_id"]) == list(recorded["student_id"])

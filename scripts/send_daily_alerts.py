@@ -32,13 +32,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 
-from config import NOTIFY_CHANNELS, STUDENT_INFO
+from config import NOTIFY_CHANNELS, RUN_QUALITY_PATH, STUDENT_INFO
 from src.data.features import add_monthly_value
 from src.data.loader import (
     latest_run_alerts,
     load_daily_students,
     previous_run_probabilities,
 )
+from src.data.run_quality import read_report
 from src.logging_setup import configure_logging
 from src.notifications.message import build_message
 from src.notifications.notify import CHANNELS, send_notifications
@@ -153,6 +154,11 @@ def main() -> int:
 
     students = todays_students()
     previous = earlier_probabilities()
+    # What the run that produced these alerts had to skip (B-28). None when the
+    # pipeline is older than this file or the state directory is not writable, in
+    # which case the message is exactly what it was before - one line short, not
+    # wrong.
+    quarantine = read_report(RUN_QUALITY_PATH)
 
     enabled = None
     if args.channels:
@@ -163,6 +169,7 @@ def main() -> int:
         still_at_risk=still_at_risk,
         students=students,
         previous_probabilities=previous,
+        quarantine=quarantine,
     )
     print(text)
     print()
@@ -173,6 +180,7 @@ def main() -> int:
             still_at_risk=still_at_risk,
             students=students,
             previous_probabilities=previous,
+            quarantine=quarantine,
             enabled=enabled,
             dry_run=args.dry_run,
         )

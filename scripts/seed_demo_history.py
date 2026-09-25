@@ -135,7 +135,7 @@ def main(argv=None) -> int:
         calibrator=load_calibrator(CALIBRATOR_PATH),
         imputation_values=meta.get("imputation_values", {}),
         threshold=threshold,
-    )
+    ).at_risk
     history = make_history(at_risk, threshold)
     if history.empty:
         print(f"nothing to seed: {len(at_risk)} student(s) at risk today, need at least 2.")

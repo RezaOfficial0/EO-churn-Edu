@@ -150,6 +150,46 @@ PRECISION_AT_K = 20
 # A single column with more than this fraction of nulls fails validation.
 MAX_NULL_RATIO_PER_COLUMN = 0.05
 
+# --- Row-level quarantine (B-28) --------------------------------------------
+# A null in ONE student's row used to fail the whole run: `require_no_nulls` is a
+# frame-level gate, so 24.999 scorable students got no message because an upstream
+# job left one row half-written. A batch scorer's correct behaviour is to score the
+# good rows and report the rejected ones, which is what "quarantine" means here.
+#
+# Where the line is (see src/data/features.SERVING_REQUIRED_COLUMNS):
+#   - a null in weekly_study_hours_actual or satisfaction_survey_score is MISSING
+#     DATA the recipe handles - the `*_missing` flag records it and the plan-type
+#     median learned at training fills it. The row is scored, and the fact that the
+#     value was absent is itself a feature the model was trained on.
+#   - a null anywhere else in the raw feature columns, or in student_id, makes the
+#     row UNUSABLE: nothing can fill it, training itself dropped such rows
+#     (`drop_unimputable_rows`), and scoring it would feed CatBoost a shape it never
+#     saw. The row is quarantined.
+#
+# Two ratios, because "a few broken rows" and "half the school is missing" are
+# different events and only one of them is an outage:
+#   QUARANTINE_WARN_RATIO - at or above this share, the skipped rows are named in
+#                           the daily message and an ops alert goes out.
+#   MAX_QUARANTINE_RATIO  - above this share the run FAILS instead of sending a
+#                           reassuring half-empty message. A run where every row is
+#                           unusable fails whatever this is set to.
+# `... or "0.10"`, not a get() default, for the same reason as the scheduler values
+# below: a variable present but empty in .env would be float("") -> ValueError at
+# import time, in every process that imports config.
+MAX_QUARANTINE_RATIO = float(os.environ.get("MAX_QUARANTINE_RATIO", "").strip() or "0.10")
+QUARANTINE_WARN_RATIO = float(
+    os.environ.get("QUARANTINE_WARN_RATIO", "").strip() or "0.01"
+)
+
+# Where the last run's quality summary (counts only - never a student id) is left
+# for the notification step to read. Two processes, one fact: the pipeline knows how
+# many rows it skipped, and `scripts/send_daily_alerts.py`, which runs afterwards
+# and reads the alert log rather than the data, is what puts it in the message.
+# Same directory as the scheduler state, i.e. a named volume in compose.
+RUN_QUALITY_PATH = os.environ.get("RUN_QUALITY_PATH", "").strip() or str(
+    BASE_DIR / "state" / "last_run_quality.json"
+)
+
 
 # --- Explanations -------------------------------------------------------
 SHAP_TOP_N_FEATURES = 3

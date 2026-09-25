@@ -25,6 +25,7 @@ def send_notifications(
     students: pd.DataFrame | None = None,
     previous_probabilities: dict[str, float] | None = None,
     run_at: datetime | None = None,
+    quarantine=None,
     enabled: list[str] | None = None,
     dry_run: bool = False,
 ) -> dict[str, str]:
@@ -33,6 +34,10 @@ def send_notifications(
     `enabled` overrides config.NOTIFY_CHANNELS (the CLI's --channels). An empty
     list means "print only", which is the default on a developer machine so a
     test run never messages a real person.
+
+    `quarantine` is passed straight through to the message builders (B-28); it adds
+    a line about rows this run could not read, and only when that share is worth
+    reporting.
     """
     enabled = list(NOTIFY_CHANNELS if enabled is None else enabled)
     unknown = [channel for channel in enabled if channel not in CHANNELS]
@@ -45,6 +50,7 @@ def send_notifications(
         students=students,
         previous_probabilities=previous_probabilities,
         run_at=run_at,
+        quarantine=quarantine,
     )
     results: dict[str, str] = {}
 
@@ -62,6 +68,7 @@ def send_notifications(
                     students=students,
                     previous_probabilities=previous_probabilities,
                     run_at=run_at,
+                    quarantine=quarantine,
                 )
                 channels.send_email(subject, text, html)
             elif channel == "webhook":

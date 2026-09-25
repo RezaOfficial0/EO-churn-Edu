@@ -309,10 +309,13 @@ def test_students_is_read_only(client):
 def test_students_response_shape(client):
     body = client.get("/students", params={"threshold": 0}).json()
 
-    assert set(body) == {"count", "threshold", "students"}
+    assert set(body) == {"count", "skipped_count", "threshold", "students"}
     assert body["threshold"] == 0
     assert body["count"] == len(body["students"])
-    assert body["count"] == len(pd.read_csv(DAILY_DATA_PATH))  # threshold 0 keeps everyone
+    # threshold 0 keeps everyone the run could score; the sample data has no unusable
+    # rows, so scored + skipped is the whole file (B-28).
+    assert body["skipped_count"] == 0
+    assert body["count"] == len(pd.read_csv(DAILY_DATA_PATH))
 
     student = body["students"][0]
     assert {

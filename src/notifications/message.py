@@ -26,6 +26,24 @@ MAX_DETAILED_STUDENTS = 10
 MAX_REPEAT_LINES = 15
 
 
+def quarantine_note(quarantine) -> str:
+    """One Turkish sentence about the rows this run could not read, or "".
+
+    Takes a `validation.QuarantineReport`. Empty string unless the report says the
+    loss is worth reporting (`reportable`), so a normal day's handful of broken rows
+    never appears - a note that shows up every morning is a note nobody reads. No
+    column names and no ids: a mentor cannot act on "days_since_last_contact", and
+    the detail is in the operator's log and ops alert instead.
+    """
+    if quarantine is None or not getattr(quarantine, "reportable", False):
+        return ""
+    return (
+        f"Not: veri kaynağındaki {quarantine.skipped} kayıt eksik bilgi içerdiği için "
+        f"({quarantine.ratio:.0%}) bu koşuda değerlendirilemedi. Toplam "
+        f"{quarantine.total} kaydın {quarantine.scored} tanesi puanlandı."
+    )
+
+
 def label_for(feature: str) -> str:
     """Turkish label for a feature, falling back to the raw column name."""
     return FEATURE_LABELS.get(feature, feature)
@@ -155,6 +173,7 @@ def build_message(
     students: pd.DataFrame | None = None,
     previous_probabilities: dict[str, float] | None = None,
     run_at: datetime | None = None,
+    quarantine=None,
 ) -> tuple[str, str]:
     """Return (subject, body) as plain text.
 
@@ -167,6 +186,11 @@ def build_message(
 
     `previous_probabilities` ({student_id: probability} from the run before this
     one) is what makes the movement visible; without it the line simply omits it.
+
+    `quarantine` (a `validation.QuarantineReport`) adds one line when this run had to
+    skip a reportable share of the input (B-28). "Risk altında öğrenci yok" is a very
+    different fact from "we could not read a fifth of the file", and the message is
+    the only place the reader of it finds out.
     """
     run_at = run_at or datetime.now()
     values = _student_values(students)
@@ -175,9 +199,13 @@ def build_message(
     total = new_count + repeat_count
 
     date = run_at.strftime("%d.%m.%Y")
+    note = quarantine_note(quarantine)
     if total == 0:
         subject = f"{NOTIFY_TITLE} — {date} — risk altında öğrenci yok"
-        return subject, f"{NOTIFY_TITLE}\n{date}\n\nBugün risk eşiğinin üzerinde öğrenci yok."
+        body = f"{NOTIFY_TITLE}\n{date}\n\nBugün risk eşiğinin üzerinde öğrenci yok."
+        # Exactly the run where the note matters most: an empty list plus unread rows
+        # looks identical to a quiet day without it.
+        return subject, f"{body}\n\n{note}" if note else body
 
     subject = f"{NOTIFY_TITLE} — {date} — {new_count} yeni, {total} toplam"
     lines = [
@@ -208,6 +236,9 @@ def build_message(
         if hidden:
             lines.append(f"... ve {hidden} öğrenci daha.")
 
+    if note:
+        lines += ["", note]
+
     return subject, "\n".join(lines)
 
 
@@ -218,6 +249,7 @@ def build_html(
     students: pd.DataFrame | None = None,
     previous_probabilities: dict[str, float] | None = None,
     run_at: datetime | None = None,
+    quarantine=None,
 ) -> str:
     """The same content as HTML, for the email channel.
 
@@ -230,6 +262,7 @@ def build_html(
     repeat_count = 0 if still_at_risk is None else len(still_at_risk)
     total = new_count + repeat_count
     date = run_at.strftime("%d.%m.%Y")
+    note = quarantine_note(quarantine)
 
     font = "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif"
     parts = [
@@ -241,8 +274,10 @@ def build_html(
         parts += [
             f'<p style="color:#666;margin:0 0 16px">{date}</p>',
             "<p>Bugün risk eşiğinin üzerinde öğrenci yok.</p>",
-            "</div>",
         ]
+        if note:
+            parts.append(f'<p style="color:#8a6d3b">{escape(note)}</p>')
+        parts.append("</div>")
         return "".join(parts)
 
     parts.append(
@@ -283,6 +318,11 @@ def build_html(
             parts.append(
                 f'<p style="color:#666;margin:6px 0 0">... ve {hidden} öğrenci daha.</p>'
             )
+
+    if note:
+        parts.append(
+            f'<p style="color:#8a6d3b;margin:20px 0 0;font-size:13px">{escape(note)}</p>'
+        )
 
     parts.append("</div>")
     return "".join(parts)

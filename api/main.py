@@ -46,10 +46,15 @@ from config import (
     STUDENT_INFO,
 )
 from pipeline.daily_pipeline import score_students
-from src.data.features import build_serving_frame
+from src.data.features import SERVING_REQUIRED_COLUMNS, build_serving_frame
 from src.data.loader import load_daily_students
 from src.data.preprocess import cast_categoricals, daily_process
-from src.data.validation import DataValidationError, require_no_nulls
+from src.data.validation import (
+    QUARANTINE_REASON_COLUMN,
+    DataValidationError,
+    quarantine_unusable_rows,
+    require_no_nulls,
+)
 from src.explainer.shap_explainer import create_explainer, explain_customers
 from src.logging_setup import configure_logging, new_request_id, request_id_var
 from src.model.calibrate import churn_proba, load_calibrator
@@ -416,6 +421,18 @@ def predict_by_student_id(student_id: str, request: Request):
         raise HTTPException(status_code=404, detail="student_id not found in daily data")
 
     imputation_values = request.app.state.meta.get("imputation_values", {})
+    # One named row, so there is no "score the rest" to fall back on: the same rule
+    # the daily run quarantines by (B-28) is a 400 here, with a count of the columns
+    # at fault rather than "null values remain after feature engineering", which
+    # described a stage the caller cannot see.
+    _, unusable = quarantine_unusable_rows(match.iloc[[0]], SERVING_REQUIRED_COLUMNS)
+    if len(unusable):
+        missing = str(unusable.iloc[0][QUARANTINE_REASON_COLUMN]).split(", ")
+        raise HTTPException(
+            status_code=400,
+            detail=f"row cannot be scored: {len(missing)} required value(s) missing",
+        )
+
     try:
         engineered = build_serving_frame(match.iloc[[0]], imputation_values)
         require_no_nulls(engineered, FEATURES)
@@ -478,11 +495,16 @@ def list_scored_students(request: Request, threshold: _ThresholdQuery = None):
     except RuntimeError as e:  # data source misconfigured (e.g. DATA_SOURCE=db, no URL)
         raise HTTPException(status_code=503, detail=str(e))
 
+    # `skipped_count` is how a dashboard can say "8 at risk of 2.480 scored, 12 rows
+    # could not be read" instead of quietly showing a shorter list (B-28). A count,
+    # not the rows: those are student records, and this endpoint already returns as
+    # few of them as it can get away with.
     return to_external(
         {
-            "count": len(result),
+            "count": len(result.at_risk),
+            "skipped_count": result.quarantine.skipped,
             "threshold": chosen_threshold,
-            "students": result,
+            "students": result.at_risk,
         }
     )
 

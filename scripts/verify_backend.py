@@ -209,7 +209,7 @@ def main() -> int:
     before = alert_count(config)
     started = time.perf_counter()
     try:
-        scored = score_students(
+        scored, _rejected, quarantine = score_students(
             model=model,
             explainer=explainer,
             calibrator=calibrator,
@@ -222,6 +222,15 @@ def main() -> int:
     elapsed_ms = (time.perf_counter() - started) * 1000
 
     ok(f"{len(scored)} student(s) at or above {threshold} of {len(students)} ({elapsed_ms:.0f} ms)")
+    # B-28: a run that skipped rows is still a successful run, but silence about it is
+    # how "the list got shorter" becomes a support ticket nobody can explain.
+    if quarantine.skipped:
+        info(
+            f"{quarantine.skipped} of {quarantine.total} row(s) quarantined "
+            f"({quarantine.ratio:.1%}): {quarantine.reasons}"
+        )
+    else:
+        ok("no unusable rows - every student in the daily data could be scored")
     if len(scored):
         top = scored.iloc[0]
         info(f"riskiest: {top['student_id']}  p={top['churn_probability']:.4f}")
