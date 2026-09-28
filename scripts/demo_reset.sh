@@ -47,6 +47,14 @@ if [ -d ../Eo-Churn-Dashboard-demo-Edu ]; then
   COMPOSE+=(-f docker-compose.dashboard.yml)
 fi
 
+# Yığın ayakta değilken bu script'in yapabileceği bir şey yok: compose "service
+# db is not running" der, sonraki adım da psycopg2 traceback'i basar ve bu,
+# ürünü ilk kez kuran birine "bozuk" gibi görünür. Tek satırla söylüyoruz.
+if ! docker compose "${COMPOSE[@]:2}" ps --status running --quiet 2>/dev/null | grep -q .; then
+  echo "hata: demo servisleri ayakta değil. Önce: ./scripts/demo_up.sh" >&2
+  exit 1
+fi
+
 echo "-> alert log temizleniyor"
 "${COMPOSE[@]}" exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'TRUNCATE alerts;'
 

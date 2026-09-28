@@ -124,7 +124,21 @@ def main() -> int:
 
     configure_logging()
 
-    new_alerts, still_at_risk = split_latest_run()
+    try:
+        new_alerts, still_at_risk = split_latest_run()
+    except Exception as e:  # noqa: BLE001 - the cause is reported, not the stack
+        # A dead database is an operational fact, not a bug: a 40-line SQLAlchemy
+        # traceback makes the product look broken to whoever just installed it.
+        # The message is redacted because DATABASE_URL carries a password.
+        from src.notifications.channels import redact
+
+        print(
+            "error: alert log okunamadı (veritabanına ulaşılamıyor).\n"
+            "Demo/compose kurulumunda servisler kapalı olabilir:  ./scripts/demo_up.sh\n"
+            f"Sebep: {redact(f'{type(e).__name__}: {e}')}",
+            file=sys.stderr,
+        )
+        return 1
 
     # Guard 1: no run at all. Without this, an empty alert log produces a cheerful
     # "no students at risk today" - which is exactly the wrong message when the

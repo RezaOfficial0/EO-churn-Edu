@@ -51,6 +51,42 @@ else
   echo "-> dashboard klasörü yok, sadece backend başlatılıyor"
 fi
 
+# Portlar dolu mu? Docker'ın kendi hatası ("ports are not available: ... bind:
+# address already in use") hangi portun, hangi ayardan geldiğini söylemiyor.
+# Müşteri sunucusunda 5432'de zaten bir Postgres olması olağan, o yüzden burada
+# adıyla söylüyoruz ve nereyi değiştireceğini yazıyoruz.
+port_busy() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+  elif command -v nc >/dev/null 2>&1; then
+    nc -z localhost "$1" >/dev/null 2>&1
+  else
+    return 1
+  fi
+}
+
+BUSY=""
+for pair in "API_PORT:$API_PORT" "DASHBOARD_PORT:$DASHBOARD_PORT" "DB_PORT:$DB_PORT"; do
+  name="${pair%%:*}"; port="${pair##*:}"
+  if port_busy "$port"; then
+    BUSY="$BUSY  $name=$port"$'\n'
+  fi
+done
+if [ -n "$BUSY" ]; then
+  # Kendi yığınımız zaten ayaktaysa bu normal: compose onu yeniden kullanır.
+  if docker compose "${FILES[@]}" ps --status running --quiet 2>/dev/null | grep -q .; then
+    echo "-> bu demo zaten kısmen ayakta, mevcut servisler yeniden kullanılacak"
+  else
+    echo "hata: şu port(lar) başka bir program tarafından kullanılıyor:" >&2
+    printf '%s' "$BUSY" >&2
+    echo "" >&2
+    echo "  Kim kullanıyor:  lsof -nP -iTCP:<port> -sTCP:LISTEN" >&2
+    echo "  Ya o programı durdur, ya da .env.docker içinde ilgili satırı" >&2
+    echo "  boşta bir porta çek (ör. DB_PORT=15433) ve tekrar çalıştır." >&2
+    exit 1
+  fi
+fi
+
 echo "-> imajlar kuruluyor (ilk sefer birkaç dakika sürer)"
 docker compose "${FILES[@]}" build
 

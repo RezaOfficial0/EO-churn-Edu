@@ -1098,6 +1098,19 @@ the pipeline (5), notify.
 
 ## Troubleshooting
 
+**`ports are not available: ... address already in use`**
+Bir port başka bir program tarafından tutuluyor; müşteri sunucusunda 5432'de
+zaten bir Postgres olması olağan. `./scripts/demo_up.sh` artık başlamadan önce
+`API_PORT`, `DASHBOARD_PORT` ve `DB_PORT`'a bakıp hangisinin dolu olduğunu
+söylüyor. Kimin tuttuğunu `lsof -nP -iTCP:<port> -sTCP:LISTEN` gösterir; ya o
+programı durdur ya da `.env.docker` içinde ilgili satırı boşta bir porta çek
+(ör. `DB_PORT=15433`). Bu yalnızca dışarı açılan portu değiştirir, container'lar
+birbirine iç ağdan `db:5432` ile konuşmaya devam eder.
+
+**`demo servisleri ayakta değil` / `service "db" is not running`**
+`demo_reset.sh` ve `demo_message.sh` yığın kapalıyken çalışmaz. Önce
+`./scripts/demo_up.sh`.
+
 **`psql: command not found`**
 The Postgres CLI tools are not on your PATH. On macOS with the EDB installer they
 live in `/Library/PostgreSQL/<version>/bin`. Add that to your shell profile — or
