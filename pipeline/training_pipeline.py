@@ -39,7 +39,13 @@ from src.data.preprocess import split_features_target, split_train_val_test
 from src.data.validation import validate
 from src.logging_setup import configure_logging
 from src.model.baseline import logistic_regression_baseline, single_rule_baseline
-from src.model.calibrate import churn_proba, fit_calibrator, raw_churn_proba, save_calibrator
+from src.model.calibrate import (
+    churn_proba,
+    fit_calibrator,
+    is_degraded,
+    raw_churn_proba,
+    save_calibrator,
+)
 from src.model.cross_validate import cross_validated_auc
 from src.model.evaluate import evaluate_model, false_negative_breakdown
 from src.model.model import build_model
@@ -106,6 +112,11 @@ def run_training_pipeline(raw_data_path=RAW_DATA_PATH, model_path=MODEL_PATH):
         "threshold_selection": threshold_selection,
         "imputation_values": imputation_values,
         "calibration_method": CALIBRATION_METHOD,
+        # False on every normal run: fit_calibrator raises on a single-class
+        # validation set rather than shipping a constant calibrator (B-26). It is
+        # recorded anyway so a run that deliberately opted into the degraded path
+        # says so in the file that travels with the model, not only in a log line.
+        "calibration_degraded": is_degraded(calibrator),
         "calibrator_path": _relative_to_base(CALIBRATOR_PATH),
         "metrics": metrics,
         "cv_auc_mean": cv_auc["mean"],

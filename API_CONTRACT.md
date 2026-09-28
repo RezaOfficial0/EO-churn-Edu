@@ -278,7 +278,7 @@ produce are simply absent):
   "chosen_threshold": 0.29,
   "calibration_method": "sigmoid",
   "data_rows": 3384,
-  "metrics": { "roc_auc": 0.718, "average_precision": 0.512, "precision_at_k": 0.75, "...": "..." },
+  "metrics": { "roc_auc": 0.718, "average_precision": 0.512, "precision_at_20": 0.75, "precision_at_k_requested": 20, "precision_at_k_effective": 20, "...": "..." },
   "cv_auc_mean": 0.741,
   "cv_auc_std": 0.023,
   "baseline_metrics": { "logistic_regression": { "...": "..." }, "single_rule": { "...": "..." } }

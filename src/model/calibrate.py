@@ -28,6 +28,22 @@ class CalibratorMissingError(RuntimeError):
     """`CALIBRATION_METHOD` asks for a calibrator and there is no file to load."""
 
 
+class DegenerateCalibrationError(ValueError):
+    """The calibration set holds one class, so there is no curve to fit (B-26).
+
+    This used to be swallowed: a single-class validation set produced a CONSTANT
+    calibrator, the training run finished, and the meta file it wrote looked
+    entirely reasonable - chosen threshold 0.01, ROC-AUC 0.5, a calibrator that
+    returns the base rate for every student. The pipeline then flagged nobody,
+    every day, without a single error. On a pilot with few churners that is the
+    most expensive failure mode in the system, so it now stops the run.
+
+    A caller that genuinely wants the base-rate constant (a smoke test, a
+    deliberate degraded run) passes `allow_single_class=True` and gets a
+    calibrator whose `.degraded` is True, which the meta records.
+    """
+
+
 class PlattCalibrator:
     """Platt scaling: a logistic curve fitted on the raw score.
 
@@ -41,14 +57,26 @@ class PlattCalibrator:
         # shrinking it towards zero would flatten the very curve we are fitting.
         self._model = LogisticRegression(C=1e10, solver="lbfgs")
         self._constant = None
+        # True only on the opt-in single-class path: a calibrator that carries no
+        # information about the model's scores. The meta file publishes it so a
+        # degraded run is visible in model_meta.json rather than only in a log line.
+        self.degraded = False
 
-    def fit(self, raw, y):
+    def fit(self, raw, y, *, allow_single_class: bool = False):
         raw = np.asarray(raw, dtype=float).reshape(-1, 1)
         y = np.asarray(y, dtype=int)
-        # One class in the validation set: there is no curve to fit, and the honest
-        # answer is the base rate. Rare, but it must not raise in a training run.
+        # One class: there is no curve to fit. Failing here is the point - see
+        # DegenerateCalibrationError for what the silent constant used to cost.
         if np.unique(y).size < 2:
+            if not allow_single_class:
+                raise DegenerateCalibrationError(_single_class_message(y))
+            logger.error(
+                "calibrating on a single-class set: the calibrator is the constant "
+                "%.4f and carries no information - this run is DEGRADED",
+                float(y.mean()),
+            )
             self._constant = float(y.mean())
+            self.degraded = True
             return self
         self._model.fit(raw, y)
         return self
@@ -73,10 +101,53 @@ def build_calibrator(method: str | None = None):
     return PlattCalibrator() if method == "sigmoid" else IsotonicRegression(out_of_bounds="clip")
 
 
-def fit_calibrator(model, X_val, y_val, *, method: str | None = None):
-    """Fit the configured calibrator: raw P(churn) -> calibrated P(churn)."""
+def _single_class_message(y) -> str:
+    classes = sorted({int(v) for v in np.asarray(y, dtype=int).tolist()})
+    return (
+        f"cannot calibrate on {len(y)} rows holding only class {classes}: a "
+        "single-class calibration set produces a constant calibrator, which scores "
+        "every student identically and makes the whole pipeline silently useless. "
+        "Use a split that contains both classes (see src/data/preprocess.py), or "
+        "pass allow_single_class=True to accept a DEGRADED calibrator on purpose."
+    )
+
+
+def is_degraded(calibrator) -> bool:
+    """True when this calibrator is the single-class constant (B-26).
+
+    `getattr` rather than an attribute access: a calibrator unpickled from a file
+    written before B-26, and an IsotonicRegression that was never marked, both
+    predate the flag and are not degraded as far as anything here can tell.
+    """
+    return bool(getattr(calibrator, "degraded", False))
+
+
+def fit_calibrator(model, X_val, y_val, *, method: str | None = None,
+                   allow_single_class: bool = False):
+    """Fit the configured calibrator: raw P(churn) -> calibrated P(churn).
+
+    Raises DegenerateCalibrationError when `y_val` holds a single class, unless
+    `allow_single_class=True` (then the calibrator comes back with `.degraded`
+    True). The check lives here, not only in PlattCalibrator, because isotonic
+    regression collapses to a constant on single-class data just as quietly.
+    """
+    y = np.asarray(y_val, dtype=float)
+    single_class = np.unique(y).size < 2
+    if single_class and not allow_single_class:
+        raise DegenerateCalibrationError(_single_class_message(y))
+
     calibrator = build_calibrator(method)
-    calibrator.fit(raw_churn_proba(model, X_val), np.asarray(y_val, dtype=float))
+    raw = raw_churn_proba(model, X_val)
+    if isinstance(calibrator, PlattCalibrator):
+        calibrator.fit(raw, y, allow_single_class=allow_single_class)
+    else:
+        calibrator.fit(raw, y)
+        if single_class:
+            logger.error(
+                "calibrating on a single-class set: the isotonic calibrator is a "
+                "constant and carries no information - this run is DEGRADED"
+            )
+            calibrator.degraded = True
     return calibrator
 
 
