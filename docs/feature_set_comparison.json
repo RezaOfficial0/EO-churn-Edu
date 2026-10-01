@@ -1,0 +1,361 @@
+{
+  "generated_at": "2026-09-28T08:12:29Z",
+  "generated_by": "scripts/compare_feature_sets.py",
+  "issue": "B-21",
+  "data_file": "mentorluk_churn_veriseti.csv",
+  "is_synthetic_data": true,
+  "precision_at_k_requested": 20,
+  "contact_features": [
+    "mentor_contact_freq_per_month",
+    "days_since_last_contact"
+  ],
+  "redundant_features": [
+    "days_to_next_exam"
+  ],
+  "variants": [
+    {
+      "variant": "full (denetim öncesi)",
+      "n_feat": 24,
+      "roc_auc": 0.7184495987300468,
+      "pr_auc": 0.5201326312127598,
+      "pr_auc_raw": 0.5201326312127598,
+      "scores": 677,
+      "scores_raw": 677,
+      "logreg_pr_auc": 0.537292452441735,
+      "cv_auc": 0.7428748963084862,
+      "threshold": 0.31,
+      "precision": 0.45622119815668205,
+      "recall": 0.5380434782608695,
+      "k": 20,
+      "precision_at_k": 0.75,
+      "lift_at_k": 2.7595108695652173,
+      "flagged": 217,
+      "precision_at_k_stability": {
+        "n_test": 677,
+        "base_rate": 0.2717872968980798,
+        "at_k": {
+          "20": {
+            "precision": 0.75,
+            "ci95_low": 0.45,
+            "ci95_high": 0.95
+          },
+          "50": {
+            "precision": 0.66,
+            "ci95_low": 0.52,
+            "ci95_high": 0.78
+          },
+          "100": {
+            "precision": 0.6,
+            "ci95_low": 0.51,
+            "ci95_high": 0.7
+          }
+        }
+      },
+      "features": [
+        "grade",
+        "track",
+        "city_tier",
+        "parent_involvement",
+        "plan_type",
+        "monthly_value_try",
+        "tenure_months",
+        "program_adherence_rate",
+        "weekly_study_hours_planned",
+        "weekly_study_hours_actual",
+        "mentor_contact_freq_per_month",
+        "days_since_last_contact",
+        "message_response_time_hours",
+        "late_response_count_30d",
+        "trial_exam_count_total",
+        "trial_exam_avg_net",
+        "trial_exam_score_trend",
+        "missed_trial_exam_count",
+        "payment_delay_days_avg",
+        "support_ticket_count_90d",
+        "satisfaction_survey_score",
+        "days_to_next_exam",
+        "weekly_study_hours_actual_missing",
+        "satisfaction_missing"
+      ]
+    },
+    {
+      "variant": "iletişim feature'ları çıkarıldı",
+      "n_feat": 22,
+      "roc_auc": 0.6032498456654026,
+      "pr_auc": 0.3756367853694362,
+      "pr_auc_raw": 0.3756367853694362,
+      "scores": 677,
+      "scores_raw": 677,
+      "logreg_pr_auc": 0.37923887617771906,
+      "cv_auc": 0.6458179229823608,
+      "threshold": 0.31,
+      "precision": 0.3691588785046729,
+      "recall": 0.42934782608695654,
+      "k": 20,
+      "precision_at_k": 0.5,
+      "lift_at_k": 1.839673913043478,
+      "flagged": 214,
+      "precision_at_k_stability": {
+        "n_test": 677,
+        "base_rate": 0.2717872968980798,
+        "at_k": {
+          "20": {
+            "precision": 0.5,
+            "ci95_low": 0.25,
+            "ci95_high": 0.7
+          },
+          "50": {
+            "precision": 0.46,
+            "ci95_low": 0.32,
+            "ci95_high": 0.6
+          },
+          "100": {
+            "precision": 0.43,
+            "ci95_low": 0.33,
+            "ci95_high": 0.54
+          }
+        }
+      },
+      "features": [
+        "grade",
+        "track",
+        "city_tier",
+        "parent_involvement",
+        "plan_type",
+        "monthly_value_try",
+        "tenure_months",
+        "program_adherence_rate",
+        "weekly_study_hours_planned",
+        "weekly_study_hours_actual",
+        "message_response_time_hours",
+        "late_response_count_30d",
+        "trial_exam_count_total",
+        "trial_exam_avg_net",
+        "trial_exam_score_trend",
+        "missed_trial_exam_count",
+        "payment_delay_days_avg",
+        "support_ticket_count_90d",
+        "satisfaction_survey_score",
+        "days_to_next_exam",
+        "weekly_study_hours_actual_missing",
+        "satisfaction_missing"
+      ]
+    },
+    {
+      "variant": "sadece iletişim + kategorikler",
+      "n_feat": 7,
+      "roc_auc": 0.7123147984831113,
+      "pr_auc": 0.5038474447410026,
+      "pr_auc_raw": 0.5038474447410026,
+      "scores": 669,
+      "scores_raw": 669,
+      "logreg_pr_auc": 0.5064483787436738,
+      "cv_auc": 0.7015889369455991,
+      "threshold": 0.31,
+      "precision": 0.47596153846153844,
+      "recall": 0.5380434782608695,
+      "k": 20,
+      "precision_at_k": 0.7,
+      "lift_at_k": 2.5755434782608693,
+      "flagged": 208,
+      "precision_at_k_stability": {
+        "n_test": 677,
+        "base_rate": 0.2717872968980798,
+        "at_k": {
+          "20": {
+            "precision": 0.7,
+            "ci95_low": 0.5,
+            "ci95_high": 0.9
+          },
+          "50": {
+            "precision": 0.6,
+            "ci95_low": 0.46,
+            "ci95_high": 0.76
+          },
+          "100": {
+            "precision": 0.54,
+            "ci95_low": 0.46,
+            "ci95_high": 0.65
+          }
+        }
+      },
+      "features": [
+        "grade",
+        "track",
+        "city_tier",
+        "parent_involvement",
+        "plan_type",
+        "mentor_contact_freq_per_month",
+        "days_since_last_contact"
+      ]
+    },
+    {
+      "variant": "tek kolon: days_since_last_contact",
+      "n_feat": 1,
+      "roc_auc": 0.6778816474115883,
+      "pr_auc": 0.4775340752558423,
+      "pr_auc_raw": 0.4775340752558423,
+      "scores": 21,
+      "scores_raw": 21,
+      "logreg_pr_auc": 0.48644851305516407,
+      "cv_auc": 0.655029780068572,
+      "threshold": 0.22,
+      "precision": 0.40893470790378006,
+      "recall": 0.6467391304347826,
+      "k": 20,
+      "precision_at_k": 0.9,
+      "lift_at_k": 3.3114130434782605,
+      "flagged": 291,
+      "precision_at_k_stability": {
+        "n_test": 677,
+        "base_rate": 0.2717872968980798,
+        "at_k": {
+          "20": {
+            "precision": 0.9,
+            "ci95_low": 0.6,
+            "ci95_high": 0.95
+          },
+          "50": {
+            "precision": 0.6,
+            "ci95_low": 0.48,
+            "ci95_high": 0.76
+          },
+          "100": {
+            "precision": 0.59,
+            "ci95_low": 0.48,
+            "ci95_high": 0.67
+          }
+        }
+      },
+      "features": [
+        "days_since_last_contact"
+      ]
+    },
+    {
+      "variant": "sadece days_to_next_exam çıkarıldı",
+      "n_feat": 23,
+      "roc_auc": 0.7150432136872741,
+      "pr_auc": 0.5061500068105339,
+      "pr_auc_raw": 0.5061500068105339,
+      "scores": 677,
+      "scores_raw": 677,
+      "logreg_pr_auc": 0.5372427485137202,
+      "cv_auc": 0.7393322466108059,
+      "threshold": 0.27,
+      "precision": 0.4198473282442748,
+      "recall": 0.5978260869565217,
+      "k": 20,
+      "precision_at_k": 0.75,
+      "lift_at_k": 2.7595108695652173,
+      "flagged": 262,
+      "precision_at_k_stability": {
+        "n_test": 677,
+        "base_rate": 0.2717872968980798,
+        "at_k": {
+          "20": {
+            "precision": 0.75,
+            "ci95_low": 0.5,
+            "ci95_high": 0.95
+          },
+          "50": {
+            "precision": 0.6,
+            "ci95_low": 0.46,
+            "ci95_high": 0.76
+          },
+          "100": {
+            "precision": 0.61,
+            "ci95_low": 0.49,
+            "ci95_high": 0.69
+          }
+        }
+      },
+      "features": [
+        "grade",
+        "track",
+        "city_tier",
+        "parent_involvement",
+        "plan_type",
+        "monthly_value_try",
+        "tenure_months",
+        "program_adherence_rate",
+        "weekly_study_hours_planned",
+        "weekly_study_hours_actual",
+        "mentor_contact_freq_per_month",
+        "days_since_last_contact",
+        "message_response_time_hours",
+        "late_response_count_30d",
+        "trial_exam_count_total",
+        "trial_exam_avg_net",
+        "trial_exam_score_trend",
+        "missed_trial_exam_count",
+        "payment_delay_days_avg",
+        "support_ticket_count_90d",
+        "satisfaction_survey_score",
+        "weekly_study_hours_actual_missing",
+        "satisfaction_missing"
+      ]
+    },
+    {
+      "variant": "post-fix (B-21, sevk edilen)",
+      "n_feat": 21,
+      "roc_auc": 0.5995237675280007,
+      "pr_auc": 0.3688127330223405,
+      "pr_auc_raw": 0.3688127330223405,
+      "scores": 677,
+      "scores_raw": 677,
+      "logreg_pr_auc": 0.3792225016957455,
+      "cv_auc": 0.6404698669510489,
+      "threshold": 0.29,
+      "precision": 0.3283018867924528,
+      "recall": 0.47282608695652173,
+      "k": 20,
+      "precision_at_k": 0.35,
+      "lift_at_k": 1.2877717391304346,
+      "flagged": 265,
+      "precision_at_k_stability": {
+        "n_test": 677,
+        "base_rate": 0.2717872968980798,
+        "at_k": {
+          "20": {
+            "precision": 0.35,
+            "ci95_low": 0.15,
+            "ci95_high": 0.6
+          },
+          "50": {
+            "precision": 0.52,
+            "ci95_low": 0.38,
+            "ci95_high": 0.66
+          },
+          "100": {
+            "precision": 0.48,
+            "ci95_low": 0.37,
+            "ci95_high": 0.57
+          }
+        }
+      },
+      "features": [
+        "grade",
+        "track",
+        "city_tier",
+        "parent_involvement",
+        "plan_type",
+        "monthly_value_try",
+        "tenure_months",
+        "program_adherence_rate",
+        "weekly_study_hours_planned",
+        "weekly_study_hours_actual",
+        "message_response_time_hours",
+        "late_response_count_30d",
+        "trial_exam_count_total",
+        "trial_exam_avg_net",
+        "trial_exam_score_trend",
+        "missed_trial_exam_count",
+        "payment_delay_days_avg",
+        "support_ticket_count_90d",
+        "satisfaction_survey_score",
+        "weekly_study_hours_actual_missing",
+        "satisfaction_missing"
+      ]
+    }
+  ]
+}

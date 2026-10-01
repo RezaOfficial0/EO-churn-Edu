@@ -29,6 +29,18 @@ TRAIN_DATA_PATH = str(BASE_DIR / "data" / "updated_data.csv")
 DAILY_DATA_PATH = str(BASE_DIR / "data" / "daily_data.csv")
 DAILY_ALERTS_PATH = str(BASE_DIR / "data" / "daily_alerts.csv")
 
+# Retention campaigns written back by the campaign generator (POST /campaigns).
+# Append-only JSON Lines rather than CSV: a campaign holds nested steps and lists,
+# and flattening that into columns loses the structure the dashboard renders.
+# Regenerated from the generator, not source - gitignored like daily_alerts.csv.
+CAMPAIGNS_PATH = str(BASE_DIR / "data" / "campaigns.jsonl")
+
+# Bounds for an accepted campaign. A generator is a separate service, possibly on
+# another machine; this endpoint is the trust boundary, so the sizes are pinned
+# here rather than assumed to be sane.
+CAMPAIGN_MAX_STEPS = 10
+CAMPAIGN_MAX_TEXT = 2000
+
 MODEL_PATH = str(BASE_DIR / "saved_models" / "catboost_churn_v1.cbm")
 MODEL_META_PATH = str(BASE_DIR / "saved_models" / "model_meta.json")
 CALIBRATOR_PATH = str(BASE_DIR / "saved_models" / "calibrator.joblib")
@@ -43,6 +55,9 @@ STUDENT_INFO = [
 ]
 
 # The exact columns the model is trained and served on, in this order.
+#
+# Three columns that were here until B-21 are not any more - see
+# AUDITED_OUT_FEATURES below and docs/LEAKAGE_AUDIT.md for the measurement.
 FEATURES = [
     "grade",
     "track",
@@ -54,8 +69,6 @@ FEATURES = [
     "program_adherence_rate",
     "weekly_study_hours_planned",
     "weekly_study_hours_actual",
-    "mentor_contact_freq_per_month",
-    "days_since_last_contact",
     "message_response_time_hours",
     "late_response_count_30d",
     "trial_exam_count_total",
@@ -65,10 +78,73 @@ FEATURES = [
     "payment_delay_days_avg",
     "support_ticket_count_90d",
     "satisfaction_survey_score",
-    "days_to_next_exam",
     "weekly_study_hours_actual_missing",
     "satisfaction_missing",
 ]
+
+
+# --- Temporal validity of the feature set (B-21) ------------------------------
+# docs/LEAKAGE_AUDIT.md is the audit; these three settings are what it changed.
+#
+# Columns that ARRIVE IN THE RAW EXPORT but are deliberately not model features.
+# The daily pipeline drops them before the validation gate (an unexpected column
+# would otherwise fail the run), and `src/data/features.py` drops them from the
+# training frame. Their FEATURE_BOUNDS / INTEGER_FEATURES / FEATURE_LABELS entries
+# below are kept ON PURPOSE rather than deleted: re-admitting one is then a single
+# edit to FEATURES, which is the property this file is built around.
+#
+# Why each one is out (numbers from docs/feature_set_comparison.json):
+#   mentor_contact_freq_per_month  reverse-causal, see CONTACT_FEATURES
+#   days_since_last_contact        reverse-causal, see CONTACT_FEATURES
+#   days_to_next_exam              redundant with `grade` and otherwise noise:
+#                                  7 distinct values per grade band (11. Sınıf
+#                                  662-668, 12. Sınıf and Mezun both 297-303), a
+#                                  univariate ROC-AUC of 0.500, and 0.503 for the
+#                                  within-band residual. It carries LESS than
+#                                  grade does - it cannot even separate 12. Sınıf
+#                                  from Mezun. Dropped, not normalised: normalising
+#                                  a column whose only content is grade leaves an
+#                                  expensive zero.
+AUDITED_OUT_FEATURES = [
+    "mentor_contact_freq_per_month",
+    "days_since_last_contact",
+    "days_to_next_exam",
+]
+
+# The subset of AUDITED_OUT_FEATURES that describes what the MENTOR did rather than
+# what the STUDENT did. These are the reverse-causality risk: "days since a mentor
+# last made contact" partly measures a break-off that has already happened, and it
+# flattens across the whole cohort the moment a client adopts a "contact everyone
+# every 7 days" policy - so the model gets worse exactly as the product is used
+# correctly. They may be re-admitted, but only with a real lag: see
+# CONTACT_LAG_DAYS and src/data/features.apply_contact_lag.
+CONTACT_FEATURES = [
+    "mentor_contact_freq_per_month",
+    "days_since_last_contact",
+]
+
+# How far ahead churn is observed - the length of the prediction window. This is a
+# property of the CLIENT's label definition, not of the model, and for the
+# synthetic dataset in data/ it is genuinely unknown: the file is one snapshot with
+# no as-of date and no window written down anywhere. The value below is therefore
+# a stated assumption used only to size the lag, never a measured fact.
+CHURN_WINDOW_DAYS = 30
+
+# Lag applied to CONTACT_FEATURES before they reach the model, in days: the value
+# used must be the one that was known BEFORE the prediction window opened, not the
+# one that is true at the moment of scoring.
+#
+# 0 = OFF, and 0 is correct for this repo. A lag cannot be faked out of a single
+# snapshot, and `apply_contact_lag` REFUSES to try: with a lag set it requires the
+# export to carry an explicit `<column>_at_window_start` value per row, and raises
+# if it does not. On the synthetic file nothing supplies one, which is why the
+# columns are dropped instead (AUDITED_OUT_FEATURES) rather than lagged.
+#
+# Turning it on, for a real client: their export adds
+# `days_since_last_contact_at_window_start` (and/or
+# `mentor_contact_freq_per_month_at_window_start`), the column names go back into
+# FEATURES, and CONTACT_LAG_DAYS is set to CHURN_WINDOW_DAYS. Nothing else changes.
+CONTACT_LAG_DAYS = int(os.environ.get("CONTACT_LAG_DAYS", "").strip() or "0")
 
 # Which of FEATURES are categorical. CatBoost handles these natively, by name.
 CAT_COLS = [
@@ -198,6 +274,7 @@ SHAP_TOP_N_FEATURES = 3
 # --- API input ranges -------------------------------------------------
 # Accepted (min, max) for each numeric field of POST /predict. A value outside
 # its range returns HTTP 422 (this is what stops monthly_value_try = 1e18).
+# Entries for the three columns AUDITED_OUT_FEATURES parked are kept here too.
 FEATURE_BOUNDS = {
     "monthly_value_try": (0, 1_000_000),
     "tenure_months": (0, 600),
@@ -242,6 +319,10 @@ MAX_CATEGORY_LENGTH = 64
 # Numeric features that are whole numbers by nature - counters and day counts.
 # "2.7 support tickets in 90 days" is not a measurement the model was trained on,
 # and accepting it hides a broken client instead of reporting it.
+#
+# `days_since_last_contact` and `days_to_next_exam` are kept here (and in
+# FEATURE_BOUNDS / FEATURE_LABELS) although B-21 took them out of FEATURES - see
+# AUDITED_OUT_FEATURES.
 INTEGER_FEATURES = [
     "days_since_last_contact",
     "late_response_count_30d",
@@ -356,8 +437,30 @@ def _validate_feature_config() -> None:
                 f"{MAX_CATEGORY_LENGTH} characters: {too_long}"
             )
 
+    # A column parked by the B-21 audit keeps its bounds, type and label entry, so
+    # that re-admitting it is one edit to FEATURES. Those entries are therefore not
+    # "stale" and must not fail the check - but a name in both lists at once is a
+    # real contradiction.
+    still_a_feature = sorted(set(AUDITED_OUT_FEATURES) & set(FEATURES))
+    if still_a_feature:
+        problems.append(
+            f"AUDITED_OUT_FEATURES names that are also in FEATURES: {still_a_feature}"
+        )
+    unknown_contact = sorted(set(CONTACT_FEATURES) - set(FEATURES) - set(AUDITED_OUT_FEATURES))
+    if unknown_contact:
+        problems.append(
+            f"CONTACT_FEATURES names that are neither in FEATURES nor parked in "
+            f"AUDITED_OUT_FEATURES: {unknown_contact}"
+        )
+    if CONTACT_LAG_DAYS < 0:
+        problems.append(f"CONTACT_LAG_DAYS must be >= 0, got {CONTACT_LAG_DAYS}")
+
+    parked = set(AUDITED_OUT_FEATURES)
+
     typed_numeric = INTEGER_FEATURES + FLAG_FEATURES
-    unknown_typed = [name for name in typed_numeric if name not in numeric]
+    unknown_typed = [
+        name for name in typed_numeric if name not in numeric and name not in parked
+    ]
     if unknown_typed:
         problems.append(
             f"INTEGER_FEATURES / FLAG_FEATURES names that are not numeric FEATURES: "
@@ -370,7 +473,7 @@ def _validate_feature_config() -> None:
         problems.append(f"FLAG_FEATURES without (0, 1) bounds: {bad_flag_bounds}")
 
     # Not fatal on its own, but it is always a leftover from a rename.
-    stale_bounds = sorted(set(FEATURE_BOUNDS) - set(FEATURES))
+    stale_bounds = sorted(set(FEATURE_BOUNDS) - set(FEATURES) - parked)
     if stale_bounds:
         problems.append(f"FEATURE_BOUNDS entries for features that no longer exist: {stale_bounds}")
 

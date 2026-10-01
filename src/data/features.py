@@ -7,6 +7,11 @@ This module is the ONE place the cleanup logic lives, so:
 
 Recipe (verified to reproduce `data/updated_data.csv` from the raw file exactly):
 
+  0. apply_contact_lag       - use the mentor-contact columns as they stood BEFORE the
+                               prediction window, not as they stand at scoring time
+                               (B-21). A no-op unless config.CONTACT_LAG_DAYS is set.
+  0b. drop_audited_out_columns - remove the raw columns that are deliberately not
+                               model features (config.AUDITED_OUT_FEATURES, B-21)
   1. drop_unimputable_rows - drop rows missing a value we cannot fill:
        mentor_contact_freq_per_month, message_response_time_hours
   1b. add_monthly_value    - derive monthly_value_try from the plan price and the
@@ -22,13 +27,23 @@ At serving time step 1 is skipped here and step 3 is skipped (the medians learne
 training time are reused, and travel with the model in model_meta.json). The rows step
 1 would have dropped are handled one level up instead: `pipeline/daily_pipeline.py`
 quarantines them (B-28) using SERVING_REQUIRED_COLUMNS below, so one unusable row
-costs that row and not the whole run.
+costs that row and not the whole run. Step 0b also runs one level up on the serving
+path, BEFORE the validation gate, because that gate rejects unexpected columns and
+an audited-out column is exactly that: expected in the export, not a model input.
+
+The temporal-validity reasoning behind steps 0 and 0b is in docs/LEAKAGE_AUDIT.md.
 """
 import logging
 
 import pandas as pd
 
-from config import FEATURES, PLAN_MONTHS
+from config import (
+    AUDITED_OUT_FEATURES,
+    CONTACT_FEATURES,
+    CONTACT_LAG_DAYS,
+    FEATURES,
+    PLAN_MONTHS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +62,102 @@ MISSING_FLAG_COLUMNS = {
 
 # Missing values are filled with the median within the row's group of this column.
 IMPUTE_GROUP_COLUMN = "plan_type"
+
+# --- Contact-column lag (B-21) ----------------------------------------------
+# {contact column: the column an export must supply to state its PRE-WINDOW value}.
+#
+# A churn model is only an early-warning system if every input was knowable before
+# the window the label is measured over. For the mentor-contact columns that is not
+# automatic: "days since a mentor last made contact", read at scoring time, spans
+# the window it is supposed to predict. The fix is to use the value as it stood when
+# the window opened - and the ONLY honest source of that value is the export, per
+# row. See docs/LEAKAGE_AUDIT.md for why it cannot be reconstructed from a snapshot.
+LAGGED_CONTACT_SOURCES = {
+    column: f"{column}_at_window_start" for column in CONTACT_FEATURES
+}
+
+
+def apply_contact_lag(df: pd.DataFrame, lag_days: int = CONTACT_LAG_DAYS) -> pd.DataFrame:
+    """Replace each in-use contact column with its value at the window start.
+
+    `lag_days` is documentation and a switch, not arithmetic: nothing here subtracts
+    it from anything. A lag is either supplied by the export, row by row, or it does
+    not exist, and this function will not invent one.
+
+      lag_days <= 0
+          off. Returns `df` unchanged. This is the setting for the synthetic dataset
+          in data/, where the contact columns are dropped instead - see
+          config.AUDITED_OUT_FEATURES.
+      lag_days > 0
+          for every column in config.CONTACT_FEATURES that is actually in
+          config.FEATURES, the export must carry `<column>_at_window_start`. That
+          column's value replaces the scoring-time one and the source column is
+          removed, so the frame stays exactly the model's feature set. A missing
+          source column raises: a lag that silently did not happen is worse than no
+          lag, because the metrics then look like a fixed model.
+
+    Columns parked by the audit are ignored on purpose: a lag for a column the model
+    does not read is not a requirement to put on a client's export.
+    """
+    if lag_days <= 0:
+        return df
+
+    in_use = [column for column in CONTACT_FEATURES if column in FEATURES]
+    if not in_use:
+        logger.info(
+            "CONTACT_LAG_DAYS=%d but no contact column is in FEATURES - nothing to lag",
+            lag_days,
+        )
+        return df
+
+    missing = [
+        LAGGED_CONTACT_SOURCES[column]
+        for column in in_use
+        if LAGGED_CONTACT_SOURCES[column] not in df.columns
+    ]
+    if missing:
+        raise ValueError(
+            f"CONTACT_LAG_DAYS={lag_days} requires the pre-window value of every "
+            f"contact feature, and these columns are not in the data: {missing}. "
+            "Supply them in the export, or take the contact features out of "
+            "config.FEATURES (see docs/LEAKAGE_AUDIT.md). This is not faked from the "
+            "scoring-time value."
+        )
+
+    df = df.copy()
+    for column in in_use:
+        source = LAGGED_CONTACT_SOURCES[column]
+        df[column] = df[source]
+        df = df.drop(columns=[source])
+    logger.info(
+        "contact lag applied (%d day(s)): %s taken from %s",
+        lag_days,
+        in_use,
+        [LAGGED_CONTACT_SOURCES[c] for c in in_use],
+    )
+    return df
+
+
+def drop_audited_out_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop the raw columns config.AUDITED_OUT_FEATURES parks (B-21).
+
+    They are present in the export and not model inputs, so they have to go before
+    anything that insists the frame is exactly the feature set - `validate()` on the
+    serving path, and the `STUDENT_INFO + FEATURES + TARGET_FEATURE` shape on the
+    training path.
+
+    A name that has been re-admitted to config.FEATURES is never dropped, whatever
+    AUDITED_OUT_FEATURES still says; config's own consistency check refuses that
+    contradiction outright.
+    """
+    parked = [
+        column
+        for column in AUDITED_OUT_FEATURES
+        if column in df.columns and column not in FEATURES
+    ]
+    if not parked:
+        return df
+    return df.drop(columns=parked)
 
 # {model feature computed here: the raw columns it is computed from}. Like the
 # missing-flags, these are NOT expected in a raw record - this module derives them.
@@ -165,8 +276,10 @@ def build_training_frame(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     saved with the model and passed to `add_missing_flags` + `apply_imputation`
     at serving time.
     """
-    df = drop_unimputable_rows(raw_df)
+    df = apply_contact_lag(raw_df)
+    df = drop_unimputable_rows(df)
     df = add_monthly_value(df)
+    df = drop_audited_out_columns(df)
     df = add_missing_flags(df)
     learned = fit_imputation(df)
     df = apply_imputation(df, learned)
@@ -176,7 +289,9 @@ def build_training_frame(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 def build_serving_frame(raw_df: pd.DataFrame, learned: dict) -> pd.DataFrame:
     """Run the recipe on incoming data at serving time: add flags, fill with the
     medians learned at training time. Never drops rows."""
-    df = add_monthly_value(raw_df)
+    df = apply_contact_lag(raw_df)
+    df = add_monthly_value(df)
+    df = drop_audited_out_columns(df)
     df = add_missing_flags(df)
     df = apply_imputation(df, learned)
     return df

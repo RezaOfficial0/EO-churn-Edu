@@ -131,7 +131,7 @@ Send one student's raw feature values, get a churn prediction. The body must con
 | counters and day counts (`config.INTEGER_FEATURES`) | whole numbers only: `3`, not `2.7`, and not `true` |
 | `_missing` flags (`config.FLAG_FEATURES`) | `0` or `1` as integers |
 | every other numeric | a finite number inside `config.FEATURE_BOUNDS`. `NaN`, `Infinity` and booleans are rejected |
-| anything not in `config.FEATURES` | rejected — an extra column would otherwise become model feature #25 |
+| anything not in `config.FEATURES` | rejected — an extra column would otherwise become model feature #25. That now includes `mentor_contact_freq_per_month`, `days_since_last_contact` and `days_to_next_exam`, which the B-21 leakage audit removed (`docs/LEAKAGE_AUDIT.md`): `POST /predict` **422**s on them. The daily batch path is deliberately laxer — a client's CSV export may keep sending them and they are dropped by name before the validation gate |
 
 Response:
 
@@ -139,9 +139,9 @@ Response:
 {
   "churn_probability": 0.4851,
   "top_reasons": [
-    {"feature": "mentor_contact_freq_per_month", "impact": 0.28},
-    {"feature": "days_since_last_contact", "impact": -0.27},
-    {"feature": "program_adherence_rate", "impact": -0.07}
+    {"feature": "program_adherence_rate", "impact": -0.27},
+    {"feature": "message_response_time_hours", "impact": 0.18},
+    {"feature": "payment_delay_days_avg", "impact": 0.07}
   ]
 }
 ```
@@ -161,7 +161,7 @@ plus the passthrough id columns.
   "churn_probability": 0.4851,
   "features": {
     "grade": "12. Sınıf",
-    "days_since_last_contact": 41.0,
+    "program_adherence_rate": 0.41,
     "satisfaction_survey_score": 3.6,
     "satisfaction_missing": 1,
     "...": "... every column in config.FEATURES"
@@ -225,11 +225,11 @@ training. Pass `?threshold=0` to get every student scored, sorted most-risky fir
       "student_id": "STU300010",
       "enrollment_date": "2025-02-01",
       "churn_probability": 0.71,
-      "features": {"grade": "12. Sınıf", "days_since_last_contact": 59.0, "...": "..."},
-      "top_reasons": "days_since_last_contact (+0.59), mentor_contact_freq_per_month (+0.28)",
+      "features": {"grade": "12. Sınıf", "program_adherence_rate": 0.39, "...": "..."},
+      "top_reasons": "program_adherence_rate (+0.59), message_response_time_hours (+0.28)",
       "top_reasons_detail": [
-        {"feature": "days_since_last_contact", "impact": 0.59},
-        {"feature": "mentor_contact_freq_per_month", "impact": 0.28}
+        {"feature": "program_adherence_rate", "impact": 0.59},
+        {"feature": "message_response_time_hours", "impact": 0.28}
       ]
     }
   ]
@@ -242,7 +242,7 @@ meaningful value here.
 
 `skipped_count` (B-28) is how many rows of today's data could **not** be scored: a
 row missing a value nothing can impute (a null `grade`, `plan_type`,
-`days_since_last_contact`, …, or a null `student_id`) is quarantined instead of
+`program_adherence_rate`, …, or a null `student_id`) is quarantined instead of
 failing the whole request. A null `weekly_study_hours_actual` or
 `satisfaction_survey_score` is *not* one of them — the imputer fills those and the
 `*_missing` flags record that it did, so those rows are scored normally.
@@ -259,6 +259,55 @@ is acceptable, a list built from half a broken export is not.
 This is the endpoint for displaying students. It is also the only one that scores a
 whole cohort, now that the write endpoint is gone.
 
+## GET /schema
+
+The feature contract, as data. Published so a consumer can **verify** the feature
+set instead of keeping a hand-written copy of it.
+
+Two services read our scored output and hold their own table keyed by feature name:
+the dashboard (labels) and the retention app (one policy rule per feature). A copy
+drifts silently. It already did: B-21 removed three columns from `FEATURES`, no
+endpoint changed shape, nothing errored, and the retention app's rule file simply
+stopped covering the features the model now reports — half the students fell back
+to a generic action. A silent downgrade is worse than a 500.
+
+`feature_set_hash` is the fix. Pin it in your own test; when it changes, your test
+fails and you look at what moved, instead of shipping a half-blind consumer.
+
+```json
+{
+  "schema_version": 1,
+  "feature_set_hash": "4df4cfbe44acf864...",
+  "id_field": "student_id",
+  "info_fields": ["student_id", "enrollment_date"],
+  "top_reasons_count": 3,
+  "features": [
+    { "name": "grade", "label": "Sınıf", "type": "categorical", "is_flag": false,
+      "levels": ["11. Sınıf", "12. Sınıf", "Mezun"] },
+    { "name": "tenure_months", "label": "Programdaki süresi (ay)", "type": "number",
+      "is_flag": false, "min": 0, "max": 600, "integer": false },
+    { "name": "satisfaction_missing", "label": "Memnuniyet anketi doldurulmamış",
+      "type": "flag", "is_flag": true, "min": 0, "max": 1, "integer": true }
+  ]
+}
+```
+
+- `type` is `categorical` (has `levels`), `number` or `flag` (also `number`-shaped,
+  always 0 or 1).
+- `is_flag: true` means the value next to it was **imputed, not measured**. Showing
+  the number without reading the flag claims a measurement nobody made.
+- `info_fields` are returned next to the features on `/students` and `/predict` and
+  are never model input — a consumer that allow-lists feature names needs to know
+  they exist so it does not reject the record for carrying them.
+- `features` is in the model's own order.
+- Answers **without a trained model**: it reads configuration, not model state, so a
+  consumer can check the contract at startup.
+- Behind the API key like every other data route. Not secret, but it is the exact
+  shape of a valid `/predict` body and an unauthenticated service should not hand
+  that out. Training statistics, file paths and the error breakdown are not here.
+
+---
+
 ## GET /metrics
 
 Returns a fixed, allow-listed subset of `saved_models/model_meta.json` — the
@@ -274,13 +323,13 @@ produce are simply absent):
 ```json
 {
   "is_synthetic_data": true,
-  "trained_at": "2026-09-17T08:25:19Z",
+  "trained_at": "2026-09-28T08:10:24Z",
   "chosen_threshold": 0.29,
   "calibration_method": "sigmoid",
   "data_rows": 3384,
-  "metrics": { "roc_auc": 0.718, "average_precision": 0.512, "precision_at_20": 0.75, "precision_at_k_requested": 20, "precision_at_k_effective": 20, "...": "..." },
-  "cv_auc_mean": 0.741,
-  "cv_auc_std": 0.023,
+  "metrics": { "roc_auc": 0.600, "average_precision": 0.369, "precision_at_20": 0.35, "precision_at_k_requested": 20, "precision_at_k_effective": 20, "...": "..." },
+  "cv_auc_mean": 0.640,
+  "cv_auc_std": 0.036,
   "baseline_metrics": { "logistic_regression": { "...": "..." }, "single_rule": { "...": "..." } }
 }
 ```

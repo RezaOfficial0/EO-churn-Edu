@@ -30,8 +30,15 @@ def logistic_regression_baseline(X_train, y_train, X_test, y_test):
     }
 
 
-def single_rule_baseline(X_test, y_test, column="days_since_last_contact"):
+def single_rule_baseline(X_test, y_test, column="message_response_time_hours"):
     """Rank students by one column, no model at all.
+
+    The default was `days_since_last_contact` until B-21, which was the strongest
+    single column in the data (ROC-AUC 0.687, PR-AUC 0.486 on its own) and is no
+    longer a feature: it described the mentor's behaviour, not the student's. The
+    replacement is the strongest STUDENT-side column that survived the audit, and it
+    is signed the right way round - higher response time, higher risk - so the raw
+    number here is readable without inverting it.
 
     The column is a default, not a requirement. FEATURES is edited per client and
     this one may not survive that edit - a diagnostic baseline must never be the

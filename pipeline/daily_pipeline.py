@@ -44,6 +44,7 @@ from src.data.features import (
     RAW_FEATURE_COLUMNS,
     SERVING_REQUIRED_COLUMNS,
     build_serving_frame,
+    drop_audited_out_columns,
 )
 from src.data.loader import append_to_alert_log, load_daily_students, previous_at_risk_ids
 from src.data.preprocess import daily_process
@@ -107,6 +108,12 @@ def score_students(
     students come from the `daily_students` table and the path is ignored.
     """
     raw = load_daily_students(daily_data_path)
+    # A client's export keeps sending the columns the B-21 leakage audit took out of
+    # the feature set - they are real fields in their CRM and it is not our place to
+    # make them strip columns. Dropping them here, by name, before the frame gate is
+    # what "accepted and deliberately ignored" means; the gate below still rejects a
+    # column nobody has written down, which is the case it exists for.
+    raw = drop_audited_out_columns(raw)
     # Raw data is allowed nulls in the columns we impute, so skip the null-ratio
     # check here. This is the FRAME gate (missing columns, empty input, repeated
     # ids) - everything it rejects is unusable as a whole, so it still stops the run.

@@ -18,21 +18,37 @@ reach out before the student is gone.
 > predicted for a real client. `model_meta.json` and `GET /metrics` both carry an
 > `is_synthetic_data` flag as a reminder.
 >
-> | | value |
-> |---|---|
-> | ROC-AUC | 0.718 |
-> | PR-AUC (average precision) | 0.512 |
-> | Brier score | 0.173 |
-> | precision@20 / lift@20 | 0.75 / 2.76 |
-> | chosen threshold | 0.29 |
-> | precision / recall **at that threshold** | 0.430 / 0.571 |
-> | confusion matrix (test, n=677) | `[[354, 139], [79, 105]]` |
+> | | value | before B-21 |
+> |---|---|---|
+> | features | 21 | 24 |
+> | ROC-AUC | 0.600 | 0.718 |
+> | PR-AUC (average precision) | 0.369 | 0.520 |
+> | Brier score | 0.193 | 0.173 |
+> | precision@20 / lift@20 | 0.35 / 1.29 | 0.75 / 2.76 |
+> | chosen threshold | 0.29 | 0.31 |
+> | precision / recall **at that threshold** | 0.328 / 0.473 | 0.430 / 0.571 |
+> | confusion matrix (test, n=677) | `[[315, 178], [97, 87]]` | `[[354, 139], [79, 105]]` |
 >
-> In plain words at the shipped operating point: roughly **57% of churners are
-> caught** and roughly **57% of alerts are false alarms**. The ranking metrics
+> In plain words at the shipped operating point: roughly **47% of churners are
+> caught** and roughly **67% of alerts are false alarms**. The ranking metrics
 > alone would be a flattering way to describe that, so both are printed here.
-> Every number above is read from `saved_models/model_meta.json`; if they
-> disagree, the file is right and this table is stale.
+> Every number in the first column is read from `saved_models/model_meta.json`; if
+> they disagree, the file is right and this table is stale.
+>
+> **The numbers went DOWN on purpose.** The "before" column is the feature set as it
+> stood until the B-21 leakage audit, measured with today's code. Most of that
+> 0.520 was one column — `days_since_last_contact` — which records what the *mentor*
+> did, not what the student did, and which scored **precision@20 = 0.900 on its own**.
+> A model whose strongest feature outranks it is not adding intelligence, and a
+> feature that measures a break-off that has already happened is not an early
+> warning. It and two others are gone; what is left is weaker and defensible. The
+> write-up, with a verdict per feature, is [`docs/LEAKAGE_AUDIT.md`](docs/LEAKAGE_AUDIT.md).
+>
+> One caveat on `precision@20` in both columns: it is measured on twenty rows. The
+> bootstrap 95% interval is [0.15, 0.60] after and [0.45, 0.95] before — the two
+> overlap, and the difference is eight students. The stable number for the shipped
+> model is **precision@50 = 0.52 [0.38, 0.66] against a 0.272 base rate, a 1.9×
+> lift** (`docs/feature_set_comparison.json`).
 
 ---
 
@@ -324,7 +340,7 @@ Every command in the project, in the order you would meet them.
 |---|---|
 | `python running_train_pipeline.py` | train, calibrate, pick the threshold, evaluate, write `saved_models/`. Required before serving: without `saved_models/calibrator.joblib` the API reports `degraded` and refuses to score, and the daily pipeline stops (B-20) |
 | `python scripts/build_training_data.py` | writes the engineered frame to `data/updated_data.csv` **for inspection only** |
-| `python scripts/compare_feature_sets.py` | train several feature-set variants into a temp dir and print a comparison table; touches nothing in `saved_models/` |
+| `python scripts/compare_feature_sets.py` | train several feature-set variants into a temp dir, print a comparison table (PR-AUC, precision@K and its bootstrap interval) and write `docs/feature_set_comparison.json`; touches nothing in `saved_models/` |
 
 Training always reads CSV and ignores `DATA_SOURCE`.
 
@@ -518,7 +534,7 @@ scripts/
   telegram_setup.py           find the chat id for .env, prove the bot can reach it
   verify_backend.py           run the whole chain end to end and report what works
   test_api.py                 live smoke test (needs a running server; read-only by default)
-  compare_feature_sets.py     offline feature-set comparison (writes to a temp dir only)
+  compare_feature_sets.py     offline feature-set comparison -> docs/feature_set_comparison.json
   demo_up.sh                  bring the whole Docker stack up
   demo_reset.sh               back to a clean demo state, before a demo
   seed_demo_history.py        DEMO ONLY: a synthetic "yesterday" run, so trends render
@@ -562,6 +578,10 @@ Everything you would tune per deployment lives in `config.py`:
 | `FEATURES` | the exact columns the model is trained and served on |
 | `CAT_COLS` | which of `FEATURES` are categorical |
 | `TARGET_FEATURE` | the label column (`"churn"`) |
+| `AUDITED_OUT_FEATURES` | columns that **arrive in the export and are deliberately not model inputs** — what the B-21 leakage audit removed. Dropped by name before the validation gate on both paths, so a client CSV may keep sending them. Their `FEATURE_BOUNDS` / `INTEGER_FEATURES` / `FEATURE_LABELS` entries are kept on purpose, so re-admitting one is a single edit to `FEATURES` |
+| `CONTACT_FEATURES` | the mentor-behaviour subset of the above — the reverse-causality risk. **Per client** |
+| `CHURN_WINDOW_DAYS` | how far ahead `churn` is observed. A property of the *client's* label definition; for the synthetic file it is a **stated assumption**, not a measured fact |
+| `CONTACT_LAG_DAYS` | `0` = off, and 0 is correct here. Above 0, every `CONTACT_FEATURES` column that is in `FEATURES` must arrive with a `<column>_at_window_start` value per row, and `apply_contact_lag` **raises** rather than falling back to the scoring-time value. A lag cannot be reconstructed from a single snapshot, so it is not faked — see [`docs/LEAKAGE_AUDIT.md`](docs/LEAKAGE_AUDIT.md) |
 | `MODEL_PARAMS` | CatBoost `iterations` / `depth` / `learning_rate` |
 | `CALIBRATION_METHOD` | `"sigmoid"` (Platt, in use) or `"isotonic"` — the comment above it records why isotonic was rejected on this data |
 | `PLAN_MONTHS` | months per plan name, used to turn `monthly_fee_try` into `monthly_value_try`. **Per client**, and currently Turkish plan names |
@@ -580,7 +600,8 @@ Everything you would tune per deployment lives in `config.py`:
 
 `config.py` runs `_validate_feature_config()` at import: it checks `FEATURES`
 against `CAT_COLS`, `FEATURE_BOUNDS`, `FEATURE_LABELS`, `CATEGORICAL_LEVELS`,
-`INTEGER_FEATURES`, `FLAG_FEATURES` and `STUDENT_INFO`, and
+`INTEGER_FEATURES`, `FLAG_FEATURES`, `STUDENT_INFO`, `AUDITED_OUT_FEATURES` and
+`CONTACT_FEATURES`, and
 refuses to load on a duplicate, a stale bound, a missing label or a target column
 that leaked into the feature list. If you are onboarding a new dataset, that
 function's error messages are the fastest way to find what you forgot. It checks
@@ -739,7 +760,7 @@ row:
 | | Example | What happens |
 |---|---|---|
 | **Missing, and handled** | `weekly_study_hours_actual`, `satisfaction_survey_score` | the `*_missing` flag records that it was absent, the plan-type median learned at training fills it, and the row is scored. The absence is itself a feature the model was trained on. |
-| **Unusable** | any other raw feature column (`grade`, `plan_type`, `days_since_last_contact`, `monthly_fee_try`, …) or a null `student_id` | nothing can fill it, `drop_unimputable_rows` drops such rows at training time, and an alert with no id is an alert nobody can act on. The row is quarantined. |
+| **Unusable** | any other raw feature column (`grade`, `plan_type`, `program_adherence_rate`, `monthly_fee_try`, …) or a null `student_id` | nothing can fill it, `drop_unimputable_rows` drops such rows at training time, and an alert with no id is an alert nobody can act on. The row is quarantined. |
 
 The exact set is `src/data/features.SERVING_REQUIRED_COLUMNS` — every raw model
 input except the two the imputer fills — so adding a feature moves this line
@@ -1214,8 +1235,12 @@ for **features**, and only for features — the *entity* is hard-coded:
 9. **`pipeline/training_pipeline.py`** — `"is_synthetic_data": True` is hard-coded.
    Leave it and every metric you ever show that client is flagged synthetic.
 10. **`src/model/baseline.py`** — `single_rule_baseline` defaults to
-    `days_since_last_contact`; **`scripts/compare_feature_sets.py`** —
-    `CONTACT_FEATURES` is EO-specific.
+    `message_response_time_hours`; **`config.py`** — `CONTACT_FEATURES`,
+    `AUDITED_OUT_FEATURES` and `CHURN_WINDOW_DAYS` (B-21) and
+    **`scripts/compare_feature_sets.py`**'s `PRE_AUDIT` list are all EO-specific. A
+    new client redoes the audit in `docs/LEAKAGE_AUDIT.md` against their own columns
+    and their own window; the mechanism (`apply_contact_lag`) carries over, the
+    verdicts do not.
 11. **The dashboard repo** — `src/adapters.js` keeps its *own* copy of the Turkish
     labels (which will drift from `config.py`) and maps ~14 named fields;
     `DetailDrawer.jsx` has its own `RAW_FIELDS` list.
@@ -1231,44 +1256,51 @@ Reducing 5–7 to `STUDENT_INFO`-driven SQL is the single change that would make
 
 ## Known limitations
 
-- **The model is trained on synthetic data, and that data has two informative
-  columns.** Measured with `python scripts/compare_feature_sets.py`:
+- **The dataset's signal was two mentor-behaviour columns, and they are now gone
+  (B-21).** Measured with `python scripts/compare_feature_sets.py`, results kept in
+  [`docs/feature_set_comparison.json`](docs/feature_set_comparison.json):
 
-  | feature set | PR-AUC |
-  |---|---|
-  | all 24 | 0.512 |
-  | without `mentor_contact_freq_per_month` + `days_since_last_contact` | 0.380 |
-  | only those two, plus the categoricals (7) | 0.508 |
+  | feature set | PR-AUC | precision@20 |
+  |---|---|---|
+  | all 24 (pre-audit) | 0.520 | 0.750 |
+  | without `mentor_contact_freq_per_month` + `days_since_last_contact` | 0.376 | 0.500 |
+  | only those two, plus the categoricals (7) | 0.504 | 0.700 |
+  | **single column `days_since_last_contact`** | 0.478 | **0.900** |
+  | **21, post-audit (shipped)** | **0.369** | **0.350** |
 
-  Two columns carry the signal; the other twenty add 0.004. That is why every
-  at-risk student's explanation is led by the same feature - it is a property of
-  the dataset, not something feature selection can fix. Dropping those columns
-  does not diversify the explanations, it destroys the model. Every metric, and
-  the chosen threshold, is a placeholder until real client data arrives.
-- **And those two columns describe mentor behaviour, which may be an effect of
-  churn rather than a cause.** "Days since a mentor last contacted this student"
-  partly measures disengagement that has already happened — a student who has
-  mentally quit stops answering, so the mentor stops calling. If that is what the
-  model is learning, it reports the past rather than warning about the future, and
-  it degrades precisely when the product is used correctly: adopt a "contact
-  everyone every 7 days" policy and the dominant feature flattens for the whole
-  cohort, so the model returns low risk for everyone including the students who
-  leave next month. Resolving this needs one fact about the data that is not
-  currently written down anywhere: whether those two columns are measured strictly
-  *before* the window in which churn is observed. Until that is answered, no claim
-  about real-world performance should be made.
+  Both columns describe what the *mentor* did rather than what the student did, and
+  "days since a mentor last made contact" partly measures a break-off that has
+  already happened — a student who has mentally quit stops answering, so the mentor
+  stops calling. It also degrades precisely when the product is used correctly:
+  adopt a "contact everyone every 7 days" policy and the dominant feature flattens
+  across the cohort, so the model returns low risk for everyone including the
+  students who leave next month. They are dropped rather than lagged, because the
+  lag cannot be reconstructed from a single snapshot — see
+  [`docs/LEAKAGE_AUDIT.md`](docs/LEAKAGE_AUDIT.md), which audits all 24 columns and
+  gives the verdict and evidence for each. `days_to_next_exam` went with them: it
+  is `grade` plus ±3 days of noise (univariate ROC-AUC 0.500).
+- **Twelve of the twenty-one surviving features still need a lag nobody can verify
+  here.** They are trailing aggregates — `program_adherence_rate`,
+  `late_response_count_30d`, `support_ticket_count_90d`, `payment_delay_days_avg`
+  and eight more — whose trailing period may run through the window `churn` is
+  measured over. This file is one snapshot with no as-of date and no written window
+  definition, so the question is answerable only on a real client's export. The
+  claim the audit supports is "no feature is *known* to be reverse-causal any
+  more", not "none is". `docs/LEAKAGE_AUDIT.md` lists all twelve.
 - **The shipped model loses to its own logistic-regression baseline.** PR-AUC
-  0.512 against 0.537, ROC-AUC 0.718 against 0.734 — same split, both scored as
-  uncalibrated rankings. `scripts/compare_feature_sets.py` states the intended
-  acceptance rule ("CatBoost must beat logistic regression, otherwise the model
-  has no value"); by that rule this model has not earned its place on this data.
-  It costs a serving dependency and the SHAP explainer, so this needs settling on
-  real data before the gradient-boosted model is assumed to be the right one.
+  0.369 against 0.379, ROC-AUC 0.600 against 0.605 — same split, both scored as
+  uncalibrated rankings. The gap narrowed when the leaky columns went (it was 0.520
+  against 0.537), but the sign did not change.
+  `scripts/compare_feature_sets.py` states the intended acceptance rule ("CatBoost
+  must beat logistic regression, otherwise the model has no value"); by that rule
+  this model has not earned its place on this data. It costs a serving dependency
+  and the SHAP explainer, so this needs settling on real data before the
+  gradient-boosted model is assumed to be the right one.
 - **The operating point is measurably more optimistic than the file suggests.**
   The validation set does three jobs — early stopping, calibrator fit and
   threshold selection — so the threshold is chosen on rows the model was tuned to
-  fit. At the identical threshold 0.29: validation cost 321 and recall 0.685;
-  test cost 376 (+17%) and recall 0.571. Production will look like the test
+  fit. At the identical threshold 0.29: validation cost 409 and recall 0.576;
+  test cost 469 (+15%) and recall 0.473. Production will look like the test
   number at best. The fix is a fourth split, or nesting the early-stopping split
   inside train.
 - **The imputer is fit before the split.** `build_training_frame` learns the
@@ -1279,11 +1311,13 @@ Reducing 5–7 to `STUDENT_INFO`-driven SQL is the single change that would make
   holdout should be by date, so the reported numbers answer "does this generalise
   to next month's students" rather than "to these students' cohort-mates".
 - **The threshold and the stated mentor capacity disagree.** At 0.29 the model
-  flags 244 of 677 students — 36% of the book — while `PRECISION_AT_K = 20` says a
+  flags 265 of 677 students — 39% of the book — while `PRECISION_AT_K = 20` says a
   mentor can contact twenty per run. `DECISION_COST` assumes unlimited outreach
   capacity (a false alarm costs a fixed 1 unit however many you generate). Both
   cannot be right. In practice mentors work the top of the list, which makes
-  `precision@20 = 0.75` the number that describes the real workflow.
+  `precision@20` the number that describes the real workflow — now 0.35, and on
+  twenty rows that number carries a 95% interval of [0.15, 0.60], so the
+  capacity-aware operating point has to be chosen on more than it.
 - **The scheduler misses a window it was asleep for.** The daily run now runs
   itself (the `scheduler` compose service, B-14), but it sleeps until the next
   `RUN_AT`: if the machine is off at 09:00 the run does not happen at 09:15 when it

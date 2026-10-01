@@ -5,8 +5,18 @@ import logging
 import math
 
 import pandas as pd
+import pytest
 
-from config import FEATURES, STUDENT_INFO, TARGET_FEATURE, TRAIN_DATA_PATH
+import src.data.features as features_module
+from config import (
+    AUDITED_OUT_FEATURES,
+    CONTACT_FEATURES,
+    CONTACT_LAG_DAYS,
+    FEATURES,
+    STUDENT_INFO,
+    TARGET_FEATURE,
+    TRAIN_DATA_PATH,
+)
 from src.data.features import (
     DERIVED_COLUMNS,
     MISSING_FLAG_COLUMNS,
@@ -14,9 +24,11 @@ from src.data.features import (
     SERVING_REQUIRED_COLUMNS,
     add_missing_flags,
     add_monthly_value,
+    apply_contact_lag,
     apply_imputation,
     build_serving_frame,
     build_training_frame,
+    drop_audited_out_columns,
     drop_unimputable_rows,
     fit_imputation,
 )
@@ -269,3 +281,101 @@ def test_the_raw_export_actually_provides_every_required_raw_column(raw_df, dail
     """The contract is only worth anything if the two files we ship satisfy it."""
     for frame in (raw_df, daily_df):
         assert not set(SERVING_REQUIRED_COLUMNS) - set(frame.columns)
+
+
+# --- B-21: temporal validity of the contact columns --------------------------
+def test_the_audited_out_columns_are_not_model_features():
+    """The audit's conclusion, as a config assertion (docs/LEAKAGE_AUDIT.md)."""
+    assert set(AUDITED_OUT_FEATURES) & set(FEATURES) == set()
+    for column in ("mentor_contact_freq_per_month", "days_since_last_contact",
+                   "days_to_next_exam"):
+        assert column in AUDITED_OUT_FEATURES
+        assert column not in FEATURES
+        assert column not in RAW_FEATURE_COLUMNS
+        assert column not in SERVING_REQUIRED_COLUMNS
+
+
+def test_audited_out_columns_are_dropped_from_a_raw_frame(raw_df):
+    """A client export still sends them; they must not reach the model or the
+    validation gate, which rejects any column outside the feature set."""
+    assert set(AUDITED_OUT_FEATURES) <= set(raw_df.columns)  # they ARE in the export
+    cleaned = drop_audited_out_columns(raw_df)
+    assert set(AUDITED_OUT_FEATURES) & set(cleaned.columns) == set()
+    # Nothing else is touched - same rows, and every other column still there.
+    assert len(cleaned) == len(raw_df)
+    assert set(raw_df.columns) - set(cleaned.columns) == set(AUDITED_OUT_FEATURES)
+
+
+def test_drop_audited_out_columns_never_drops_a_readmitted_feature(raw_df, monkeypatch):
+    """Re-admitting a column is one edit to config.FEATURES; the drop must yield to
+    it rather than quietly removing a column the model is now trained on."""
+    monkeypatch.setattr(
+        features_module, "FEATURES", list(FEATURES) + ["days_since_last_contact"]
+    )
+    cleaned = drop_audited_out_columns(raw_df)
+    assert "days_since_last_contact" in cleaned.columns
+    assert "days_to_next_exam" not in cleaned.columns  # still parked
+
+
+def test_the_engineered_training_frame_is_exactly_the_model_input(raw_df):
+    """What the drop is FOR: validate() insists the frame is exactly
+    STUDENT_INFO + FEATURES + TARGET_FEATURE, so a parked column left in the frame
+    would fail the training run."""
+    engineered, _learned = build_training_frame(raw_df)
+    assert set(engineered.columns) == set(STUDENT_INFO) | set(FEATURES) | {TARGET_FEATURE}
+
+
+def test_the_serving_frame_is_exactly_the_model_input(daily_df):
+    engineered = build_serving_frame(daily_df, LEARNED_IMPUTATION)
+    assert set(FEATURES) <= set(engineered.columns)
+    assert set(AUDITED_OUT_FEATURES) & set(engineered.columns) == set()
+
+
+def test_no_lag_is_applied_when_the_switch_is_off(raw_df):
+    """0 is the shipped setting: the synthetic snapshot cannot support a lag."""
+    assert CONTACT_LAG_DAYS == 0
+    pd.testing.assert_frame_equal(apply_contact_lag(raw_df, 0), raw_df)
+    pd.testing.assert_frame_equal(apply_contact_lag(raw_df, -5), raw_df)
+
+
+def test_a_lag_on_a_feature_set_without_contact_columns_is_a_no_op(raw_df):
+    """The shipped FEATURES has no contact column, so even a lag that is switched on
+    has nothing to require of the export."""
+    assert not set(CONTACT_FEATURES) & set(FEATURES)
+    pd.testing.assert_frame_equal(apply_contact_lag(raw_df, 30), raw_df)
+
+
+def test_a_lag_uses_the_window_start_column_and_removes_it(monkeypatch):
+    """The real-client path: the export supplies the pre-window value per row."""
+    monkeypatch.setattr(
+        features_module, "FEATURES", list(FEATURES) + ["days_since_last_contact"]
+    )
+    frame = pd.DataFrame(
+        {
+            "student_id": ["S1", "S2"],
+            "days_since_last_contact": [2, 3],            # at scoring time
+            "days_since_last_contact_at_window_start": [41, 60],  # before the window
+        }
+    )
+    lagged = apply_contact_lag(frame, 30)
+
+    assert lagged["days_since_last_contact"].tolist() == [41, 60]
+    assert "days_since_last_contact_at_window_start" not in lagged.columns
+    assert frame["days_since_last_contact"].tolist() == [2, 3]  # input untouched
+
+
+def test_a_lag_without_a_window_start_column_raises_rather_than_faking_one(monkeypatch):
+    """The point of the mechanism. A lag that silently did not happen is worse than
+    no lag: the metrics then look like a fixed model."""
+    monkeypatch.setattr(
+        features_module, "FEATURES", list(FEATURES) + ["days_since_last_contact"]
+    )
+    frame = pd.DataFrame({"student_id": ["S1"], "days_since_last_contact": [2]})
+
+    with pytest.raises(ValueError) as error:
+        apply_contact_lag(frame, 30)
+
+    message = str(error.value)
+    assert "days_since_last_contact_at_window_start" in message
+    # and it did not quietly shift the scoring-time value by the lag instead
+    assert frame["days_since_last_contact"].tolist() == [2]

@@ -38,6 +38,7 @@ def anonymous_client():
 _PROTECTED_REQUESTS = [
     ("GET", "/students"),
     ("GET", "/metrics"),
+    ("GET", "/schema"),
     ("GET", "/predict/STU300001"),
     ("POST", "/predict"),
     ("GET", "/docs"),

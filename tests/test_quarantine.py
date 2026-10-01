@@ -41,17 +41,23 @@ def test_imputable_null_keeps_the_row_unusable_null_drops_it(daily_df):
     """The line the whole issue turns on, stated as one test.
 
     `satisfaction_survey_score` is null-able by design: the `satisfaction_missing`
-    flag records it and the imputer fills it. `days_since_last_contact` is not.
+    flag records it and the imputer fills it. `program_adherence_rate` is not.
+
+    The unusable column used to be `days_since_last_contact`. B-21 took that one out
+    of the feature set entirely (docs/LEAKAGE_AUDIT.md), so a null in it is no longer
+    a null in a required column - it is a null in a column the pipeline drops before
+    it looks. The decision this test pins is unchanged; only the example moved to
+    another required column.
     """
     frame = daily_df.head(4).copy()
     frame.loc[frame.index[0], "satisfaction_survey_score"] = None
-    frame.loc[frame.index[1], "days_since_last_contact"] = None
+    frame.loc[frame.index[1], "program_adherence_rate"] = None
 
     usable, rejected = quarantine_unusable_rows(frame, SERVING_REQUIRED_COLUMNS)
 
     assert len(usable) == 3
     assert len(rejected) == 1
-    assert rejected.iloc[0][QUARANTINE_REASON_COLUMN] == "days_since_last_contact"
+    assert rejected.iloc[0][QUARANTINE_REASON_COLUMN] == "program_adherence_rate"
 
 
 def test_every_imputable_column_is_allowed_to_be_null(daily_df):
@@ -226,7 +232,9 @@ def _daily_csv(tmp_path, frame) -> str:
 def test_one_null_no_longer_costs_the_whole_run(tmp_path, daily_df):
     """The bug, stated: before B-28 this raised and nobody got scored."""
     frame = daily_df.copy()
-    frame.loc[frame.index[0], "days_since_last_contact"] = None
+    # Was days_since_last_contact until B-21 dropped it from FEATURES - see
+    # test_imputable_null_keeps_the_row_unusable_null_drops_it.
+    frame.loc[frame.index[0], "program_adherence_rate"] = None
 
     result = score_students(_daily_csv(tmp_path, frame), **_scoring_kwargs())
 
@@ -250,7 +258,8 @@ def test_an_unusable_row_is_not_scored_and_the_rest_are_unchanged(tmp_path, dail
         index for index in poisoned.index
         if str(poisoned.loc[index, "student_id"]) not in at_risk_ids
     )
-    poisoned.loc[victim, "mentor_contact_freq_per_month"] = None
+    # Was mentor_contact_freq_per_month until B-21 dropped it from FEATURES.
+    poisoned.loc[victim, "payment_delay_days_avg"] = None
 
     after = score_students(_daily_csv(tmp_path, poisoned), **_scoring_kwargs())
 

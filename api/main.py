@@ -25,10 +25,19 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import JSONResponse
-from pydantic import BeforeValidator, ConfigDict, Field, StrictInt, create_model
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StrictInt,
+    create_model,
+)
 
 from config import (
     ALLOW_NO_AUTH,
+    CAMPAIGN_MAX_STEPS,
+    CAMPAIGN_MAX_TEXT,
     ALLOWED_ORIGINS,
     API_BIND_HOST,
     API_KEY,
@@ -59,6 +68,8 @@ from src.explainer.shap_explainer import create_explainer, explain_customers
 from src.logging_setup import configure_logging, new_request_id, request_id_var
 from src.model.calibrate import churn_proba, load_calibrator
 from src.model.load import check_meta_matches_config, load_meta, load_model
+from src.data.campaigns import append_campaign, latest_campaign_by_student
+from src.feature_schema import feature_schema
 from src.serialization import to_external
 
 logger = logging.getLogger(__name__)
@@ -526,6 +537,102 @@ METRICS_PUBLIC_FIELDS = (
     "cv_auc_std",
     "baseline_metrics",
 )
+
+
+# --- Retention campaigns (written back by the generator service) -------------
+# The generator runs as its own process and may sit on another machine, so this
+# endpoint is a trust boundary, not an internal call. Everything is bounded and
+# `extra="forbid"`: an unexpected key is a contract drift we want to hear about
+# on the first request, not after a week of silently dropped fields.
+
+_Text = Annotated[str, Field(min_length=1, max_length=CAMPAIGN_MAX_TEXT)]
+_Short = Annotated[str, Field(min_length=1, max_length=200)]
+
+
+class CampaignStepIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    step: StrictInt = Field(ge=1, le=CAMPAIGN_MAX_STEPS)
+    timing: _Short
+    owner: _Short
+    channel: _Short
+    action_id: _Short
+    objective: _Text
+    # The text a mentor will actually send. Stored verbatim; the dashboard renders
+    # it as text, never as markup.
+    message_draft: _Text
+    success_criteria: list[_Short] = Field(default_factory=list, max_length=5)
+    policy_source_ids: list[_Short] = Field(default_factory=list, max_length=10)
+
+
+class CampaignIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    student_id: _Short
+    campaign_id: _Short
+    priority: Literal["low", "medium", "high", "critical"]
+    risk_summary: _Text
+    strategy: _Text
+    campaign_steps: list[CampaignStepIn] = Field(min_length=1, max_length=CAMPAIGN_MAX_STEPS)
+    approved_offer_ids: list[_Short] = Field(default_factory=list, max_length=10)
+    policy_source_ids: list[_Short] = Field(default_factory=list, max_length=20)
+    missing_information: list[_Text] = Field(default_factory=list, max_length=20)
+    warnings: list[_Text] = Field(default_factory=list, max_length=20)
+    # Defaults to True and the generator is expected to send True. A campaign that
+    # claims it needs no human review is the one case worth seeing explicitly.
+    requires_human_review: bool = True
+    # Provenance, so a mentor reading a draft knows what produced it. Free text
+    # because the generator owns its own model names; bounded like everything else.
+    generated_by: _Short = "unknown"
+    model: _Short = "unknown"
+
+
+@app.post("/campaigns", dependencies=[Depends(require_api_key)], status_code=201)
+def store_campaign(payload: CampaignIn):
+    """Record one generated retention campaign.
+
+    Append-only: regenerating does not overwrite the previous draft. Readers take
+    the newest per student, so a second POST simply becomes the current one.
+    """
+    try:
+        record = append_campaign(payload.model_dump())
+    except (OSError, ValueError) as e:
+        # The path and the underlying error are logged, not returned: this body is
+        # rendered by someone else's UI and must not leak our filesystem layout.
+        logger.exception("could not store campaign")
+        raise HTTPException(status_code=503, detail="campaign store is unavailable") from None
+    return to_external(
+        {"status": "stored", "campaign_id": record["campaign_id"], "stored_at": record["stored_at"]}
+    )
+
+
+@app.get("/campaigns", dependencies=[Depends(require_api_key)])
+def list_campaigns():
+    """The newest campaign per student, for the dashboard to show next to a row."""
+    latest = latest_campaign_by_student()
+    return to_external({"count": len(latest), "campaigns": list(latest.values())})
+
+
+@app.get("/campaigns/{student_id}", dependencies=[Depends(require_api_key)])
+def campaign_for_student(student_id: str):
+    campaign = latest_campaign_by_student().get(student_id)
+    if campaign is None:
+        # The id is not echoed back (B-12): this body is logged by proxies.
+        raise HTTPException(status_code=404, detail="no campaign for that student")
+    return to_external(campaign)
+
+
+@app.get("/schema", dependencies=[Depends(require_api_key)])
+def feature_contract():
+    """Publish the feature set so a consumer can verify it instead of copying it.
+
+    Behind the API key like every other data route: it is not secret, but it is
+    the exact shape of a valid /predict body, and an unauthenticated service
+    should not hand that out. It reads config, not the loaded model, so it
+    answers before a model is trained - a consumer checking the contract at
+    startup must not depend on model state.
+    """
+    return to_external(feature_schema())
 
 
 @app.get("/metrics", dependencies=[Depends(require_api_key)])
