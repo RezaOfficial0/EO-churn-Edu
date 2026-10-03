@@ -222,6 +222,70 @@ DECISION_COST = {
 PRECISION_AT_K = 20
 
 
+# --- Retrospective backtest (scripts/backtest.py) ----------------------------
+# The backtest is the sales motion, not a dev tool: a prospect sends an anonymised
+# 12-month export and gets back "these are the students you lost that we would have
+# flagged, this many days earlier". Everything here is a DEFAULT - every one of
+# them is also a CLI flag, because a prospect's export decides what is possible.
+
+# How far apart the walk-forward evaluation points sit, in days. 30 mirrors the
+# monthly cadence a mentorship programme actually reviews its list on, and it is
+# also the resolution of every lead-time number: with a 30-day step a flag that
+# came 10 days early is indistinguishable from one that came 30 days early.
+BACKTEST_STEP_DAYS = 30
+
+# How stale a student's most recent history row may be and still count as "active"
+# at an evaluation point. 0 means "derive it from the export": twice the median
+# per-student gap between observations, which is what makes the same defaults work
+# on a weekly export and on a monthly one.
+BACKTEST_ACTIVE_WINDOW_DAYS = 0
+
+# An evaluation point with less than this much labelled training data is SKIPPED
+# and the reason recorded, rather than reported as a weak fold. A fold trained on
+# 40 rows produces a number, and that number is worse than no number because it
+# still looks like a measurement.
+BACKTEST_MIN_TRAIN_ROWS = 200
+BACKTEST_MIN_TRAIN_CHURNERS = 10
+
+# The last share of the training slice's DATES held back for calibration and
+# threshold selection. Split by date, not at random, so the fold's calibrator is
+# fitted on the most recent data that was knowable - the same discipline as the
+# fold itself.
+BACKTEST_VAL_DATE_FRACTION = 0.25
+
+# Bootstrap resamples behind every confidence interval in the report. Resampling
+# is at STUDENT level, so one student cannot appear as two independent data points.
+BACKTEST_BOOTSTRAP_RESAMPLES = 2000
+
+# Below this many students a figure is published with `reportable: false` and the
+# Turkish summary says in words that it is noise. A precision measured on 20
+# students is 20 coin flips - see the health warning in docs/LEAKAGE_AUDIT.md.
+BACKTEST_MIN_REPORTABLE_N = 30
+
+# Fewer usable feature columns than this and there is nothing to train. Refusing
+# is the right answer: a two-feature model that produces a chart is a worse
+# outcome for a sales conversation than an email asking for three more columns.
+BACKTEST_MIN_FEATURES = 3
+
+# Below this share of history students present in the outcomes file, the two files
+# are assumed not to belong together (almost always an id-format mismatch) and the
+# run stops. --allow-partial-outcomes overrides it.
+BACKTEST_MIN_OUTCOME_COVERAGE = 0.5
+
+# Where a backtest run writes its JSON, unless --out says otherwise.
+BACKTEST_OUTPUT_DIR = str(BASE_DIR / "metrics")
+
+
+# --- Synthetic-data marker ---------------------------------------------------
+# scripts/make_synthetic_history.py stamps this column, with this value, into
+# every row of every file it writes, and scripts/backtest.py looks for it. The
+# backtest then refuses to print a single number without a SENTETIK banner above
+# it. The marker is a COLUMN rather than a filename convention because a filename
+# survives exactly one "let me just rename this before I forward it".
+SYNTHETIC_MARKER_COLUMN = "eo_synthetic_marker"
+SYNTHETIC_MARKER_VALUE = "SENTETIK_VERI_GERCEK_MUSTERI_VERISI_DEGIL"
+
+
 # --- Data quality ---------------------------------------------------------
 # A single column with more than this fraction of nulls fails validation.
 MAX_NULL_RATIO_PER_COLUMN = 0.05

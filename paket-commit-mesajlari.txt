@@ -1,0 +1,146 @@
+========================  1) GET /schema  ========================
+branch: feat/feature-sozlesmesi
+
+feat(api): GET /schema - feature sozlesmesi veri olarak yayinlaniyor
+
+Skorlanmis ciktiyi okuyan iki servis var ve ikisi de feature adina gore kendi
+tablosunu tutuyor: dashboard (etiketler) ve retention app (feature basina bir
+politika kurali). Kopya sessizce ayrisir.
+
+Nitekim ayristi. B-21 FEATURES'tan uc kolon cikardi; hicbir endpoint sekil
+degistirmedi, hicbir sey hata vermedi, ama retention app'in feature_rules.json
+dosyasi modelin artik urettigi feature'lari kapsamayi birakti. 8 riskli
+ogrencinin 4'u jenerik fallback'e dustu. 500 degil, sessiz kalite dususu.
+
+feature_set_hash: tuketici yazildigi andaki hash'i kendi testine pinliyor,
+FEATURES degisince o test kiriliyor.
+
+Testler: 12 yeni.
+
+========================  2) Kampanya kaydi  ========================
+branch: feat/kampanya-kaydi
+
+feat(api): retention kampanyalari icin kayit ve okuma uclari
+
+POST /campaigns (201), GET /campaigns, GET /campaigns/{student_id}
+src/data/campaigns.py: append-only JSON Lines depo.
+
+Kampanya ureteci ayri bir surecte, muhtemelen baska bir makinede: bu uc bir
+guven siniri. Her alan sinirli, extra="forbid".
+
+Dosya bir TABLO degil bir LOG: kampanyayi yeniden uretmek oncekini silmiyor.
+"Gecen hafta bu ogrenciye ne soyledik" pilotun cevaplamak zorunda oldugu soru.
+
+Yol cagri aninda cozuluyor, varsayilan argumanda baglanmiyor - aksi halde modul
+ilk import edildiginde sabitlenir ve testler gercek data/ dosyasina yazardi.
+Nitekim test bunu yakaladi.
+
+Testler: 18 yeni.
+
+========================  3) Preflight  ========================
+branch: feat/preflight-kontrolu
+
+feat(ops): scripts/preflight.py - calistirmadan once tutarlilik kontrolu
+
+1 Ekim gecesi uc sey ayri ayri patladi ve ucu de sessizdi:
+
+  1. Commit edilmemis is `git checkout` ile silindi, hicbir hata vermedi.
+  2. Model 24 feature'likti, config 21 diyordu. API "degraded" dedi ama
+     hangisinin uyusmadigini soylemedi; yarim saat yanlis yerde arandi.
+  3. LM Studio'da model yuklu degildi, ustelik bir embedding modeline sohbet
+     modelinin adi takilmisti - /v1/models listesinde dogru gorunuyordu.
+
+Ucu de bes saniyede yakalanabilirdi.
+
+- Feature seti kontrolu SIRAYI da karsilastiriyor: CatBoost'a feature'lar
+  sirayla veriliyor, ayni kumeyi farkli sirada vermek sessizce yanlis skor
+  uretir. "Eksik kolon yok" diyen bir kontrol bunu kacirirdi.
+- Yerel model kontrolu /v1/models listesine GUVENMIYOR, gercek bir cikarim
+  istegi gonderiyor. Liste takma isim gosterebiliyor.
+- Servis kontrolu "ayakta mi" degil "dogru cevap veriyor mu" diye soruyor.
+
+1 Ekim durumu simule edilip yakaladigi dogrulandi.
+
+========================  4) Backtest  ========================
+branch: feat/geriye-donuk-analiz
+
+feat(backtest): musteri exportundan ileri yuruyuslu geriye donuk analiz
+
+Bir yatirimci demoyu izlemeyi reddetti: sahada kullanilmamis, gercek veri yok,
+gerisi onemli degil dedi. Cevabi bu script.
+
+Aday hicbir seye baglanmiyor - entegrasyon yok, kurulum yok, erisim yok. Iki
+CSV gonderiyor. Script "kaybettiginiz ogrencilerin hangilerini kac gun onceden
+isaretlerdik" sorusunu cevapliyor.
+
+Zamansal garanti: `as_of_date <= T` YETMEZ. T-5 tarihli bir satirin penceresi
+T'de hala acik, yani etiketi o gun bilinemezdi. Kesim `as_of_date + W <= T`.
+Her degerlendirme noktasinda T-W ile T arasi olu alan: gercek satirlar,
+gecmiste, ve yine de kullanilamaz.
+
+_assert_only_past() uyari degil hata firlatiyor ve CAGRI YERINE degil VERIYE
+bakiyor - gelecekteki bir satir raporu IYILESTIRDIGI icin hicbir sey
+sikayet etmezdi.
+
+Sizinti testi cift tarafli: dogru kosuda precision@20 = 0.00, embargo
+kaldirilinca 1.00. Tek tarafli bir test, sizdiriyorken de gecerdi.
+
+Rapor kapasiteyi de olcuyor: 20 kisilik liste x 9 donem = 180 isaretleme hakki,
+906 ayrilmaya karsi. Kusursuz bir siralama bile en fazla %19.9 kapsardi.
+Kapsama rakami bu tavana gore okunuyor, 100'e gore degil.
+
+Parasal bolum "risk altinda ve gorunur" diyor, "kurtarilan" demiyor: backtest'te
+kimse mudahale etmedi.
+
+scripts/make_synthetic_history.py tek kesiti sahte bir 12 aylik gecmise
+ceviriyor, sentetikligi dosya adinda ve her ciktida isaretli.
+
+Testler: 89 yeni. Suite 405 -> 494, skip yok.
+
+========================  5) Dokumanlar  ========================
+branch: docs/backtest-ve-pilot
+
+docs: backtest yordami, veri talebi ve pilot kurulumu
+
+- docs/BACKTEST.md: ic yordam. Veri geldigi gun uygunluk kontrolu, kotu veri
+  senaryolari, ciktinin nasil okunacagi, ve raporda SOYLENMEYECEK cumleler.
+- docs/VERI_TALEBI.md: adaya giden talep. Zorunlu sadece iki kolon
+  (student_id, as_of_date); gerisi analizi iyilestiriyor, hicbiri sart degil.
+  Her zorunlu kolon adayin vazgecmesi icin bir sebep.
+- docs/PILOT_KURULUM.md: evet diyen musteride kurulum, ve sistemin HENUZ
+  yapmadiklari. Eksikleri gizleyen bir kontrol listesi ise yaramaz.
+
+VERI_TALEBI.md icinde [DOLDURULACAK] birakilan bir blok var (veri akibeti,
+ucret, NDA). Doldurulmadan gonderilmemeli.
+
+
+========================  EK: dokuman duzeltmeleri  ========================
+(5. commit'e dahil edilecek)
+
+docs: veri talebi scriptin gercekten yapabildigini soyluyor
+
+docs/VERI_TALEBI.md uc yerde tutamayacagimiz seyi vaat ediyordu. Aday kuruma
+giden bir belgede bu, ilk backtest'te ozur dilemek demek:
+
+- "tek bir guncel kesit gonderirseniz siralama testi yapariz" -> YANLIS.
+  evaluation_origins() 90 gunden kisa veriyi reddediyor. Olcup dogruladim:
+  89 gun reddedildi, 90 gun kabul. Artik iki kesin alt sinir olarak yaziyor.
+- "davranis kolonu hic yoksa paket/sinif iliskisi bakariz" -> YANLIS.
+  BACKTEST_MIN_FEATURES = 3, daha aziyla egitilecek model yok.
+- "raporda TL hesabi olmayacak" -> script parasal bolum BASIYOR. Yasak olan
+  TL'nin varligi degil "kurtarilan gelir" cercevesi. Cumle duzeltildi ve
+  raporun ne dedigi aynen yazildi: "risk altina giren ve gorunur hale gelen
+  tutar".
+
+Ayrica adaydan dosyalarin baslik satirini da istiyoruz - eslemeyi biz
+yaptigimiz icin bu tek cumle bir tur yazismayi tamamen kaldiriyor.
+
+[DOLDURULACAK] blogu dolduruldu: analiz ucretsiz, veri rapor teslim edildigi
+gun siliniyor, NDA aday isterse imzalaniyor. Silme sozu somut: tek makine,
+sifreli disk, bulut yok, yedek yok, repo yok, model egitiminde kullanilmiyor.
+Rapor ogrenci bazli satir tasimiyor (JSON'da tek bir ogrenci kimligi gecmedigi
+grep ile dogrulandi).
+
+docs/BACKTEST_YORDAMI.md: ic yordam. Veri geldigi gun uygunluk kontrolu,
+scriptin gercekten reddettigi 7 esik, alti kotu-veri senaryosu, cikti sayilarinin
+tek tek nasil okunacagi, yasak cumleler, teslim gunu 11 maddelik silme listesi.

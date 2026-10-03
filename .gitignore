@@ -30,3 +30,9 @@ metrics/train_metrics_*.json
 
 # NOTE: data/*.csv and saved_models/ ARE committed on purpose so the project
 # runs immediately after `git clone` (see README "Quickstart").
+
+# Backtest demo verisi: scripts/make_synthetic_history.py ile ~10 saniyede
+# yeniden uretiliyor, 7.8 MB ve kaynak degil. Musteri verisi de asla buraya
+# girmiyor - backtest repo DISINDA calistirilir (bkz. docs/BACKTEST_YORDAMI.md).
+data/SENTETIK_*
+metrics/SENTETIK_backtest_*.json
