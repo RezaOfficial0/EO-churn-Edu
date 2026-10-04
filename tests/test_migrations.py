@@ -129,6 +129,37 @@ def test_untracked_legacy_database_is_adopted(empty_db):
     assert _migrate(empty_db) == []
 
 
+def test_history_migration_keeps_rows_and_allows_new_snapshots(empty_db):
+    """003 on a database that already holds data: rows move to today's date, a second
+    snapshot of the same student fits, and alerts no longer need a snapshot row."""
+    before = [p for p in init_db.migration_files() if p.name < "003"]
+    _migrate(empty_db, before)
+    with empty_db.begin() as c:
+        c.exec_driver_sql("INSERT INTO daily_students VALUES ('S1', NULL, '{}', now())")
+        c.exec_driver_sql(
+            "INSERT INTO alerts (student_id, churn_probability, status) VALUES ('S1', 0.6, 'new')"
+        )
+
+    _migrate(empty_db)  # applies 003 only
+
+    with empty_db.begin() as c:
+        carried = c.exec_driver_sql(
+            "SELECT count(*) FROM daily_students WHERE as_of_date = CURRENT_DATE"
+        ).scalar()
+        c.exec_driver_sql(
+            "INSERT INTO daily_students (student_id, as_of_date, features) "
+            "VALUES ('S1', CURRENT_DATE - 7, '{}')"
+        )
+        c.exec_driver_sql(
+            "INSERT INTO alerts (student_id, churn_probability, status) VALUES ('GONE', 0.5, 'new')"
+        )
+        total = c.exec_driver_sql("SELECT count(*) FROM daily_students").scalar()
+        kept = c.exec_driver_sql("SELECT count(*) FROM alerts").scalar()
+    assert carried == 1
+    assert total == 2
+    assert kept == 2
+
+
 def test_failed_migration_rolls_back_and_records_nothing(empty_db, tmp_path):
     good = init_db.migration_files()
     (tmp_path / "900_broken.sql").write_text("ALTER TABLE no_such_table ADD COLUMN x INT;")

@@ -82,6 +82,21 @@ FEATURES = [
     "satisfaction_missing",
 ]
 
+# Trend features: {raw column: [window days]}. BOŞ = kapalı. Açmadan önce
+# geçmiş birikmiş ve model yeniden eğitilmiş olmalı (eğitim CSV tek snapshot).
+TREND_FEATURES: dict[str, list[int]] = {}
+# örn: {"program_adherence_rate": [7, 28], "trial_exam_avg_net": [28]}
+
+TREND_TOLERANCE_DAYS = 3   # tam gün yoksa pencere hedefinden en fazla bu kadar geriye bak
+
+TREND_COLUMNS = [
+    f"{col}_delta_{n}d{suffix}"
+    for col, windows in TREND_FEATURES.items()
+    for n in windows
+    for suffix in ("", "_missing")
+]
+FEATURES += TREND_COLUMNS
+
 
 # --- Temporal validity of the feature set (B-21) ------------------------------
 # docs/LEAKAGE_AUDIT.md is the audit; these three settings are what it changed.

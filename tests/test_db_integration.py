@@ -10,7 +10,7 @@ deliberately not `DATABASE_URL`, so running `pytest` in a shell configured for
 development can never write to the database you actually use.
 """
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -121,6 +121,83 @@ def test_upsert_updates_an_existing_student(db, daily_csv):
 def test_empty_frame_writes_nothing(db):
     assert loader.upsert_daily_students_db(pd.DataFrame()) == 0
     assert loader.count_daily_students_db() == 0
+
+
+# --- history: one snapshot per student per as_of_date -------------------------
+DAY_1 = date(2026, 9, 1)
+DAY_2 = date(2026, 9, 8)
+
+
+def _row_count(engine) -> int:
+    with engine.connect() as connection:
+        return connection.exec_driver_sql("SELECT count(*) FROM daily_students").scalar()
+
+
+def test_two_as_of_dates_keep_both_snapshots(db, daily_csv):
+    loader.upsert_daily_students_db(daily_csv, DAY_1)
+    loader.upsert_daily_students_db(daily_csv, DAY_2)
+
+    assert _row_count(db) == 2 * len(daily_csv)
+    assert loader.count_daily_students_db() == len(daily_csv)  # distinct students
+    assert loader.count_daily_students_db(DAY_1) == len(daily_csv)
+    assert loader.count_daily_students_db(DAY_2) == len(daily_csv)
+
+
+def test_loading_the_same_date_twice_does_not_add_rows(db, daily_csv):
+    loader.upsert_daily_students_db(daily_csv, DAY_1)
+    loader.upsert_daily_students_db(daily_csv, DAY_1)
+    assert _row_count(db) == len(daily_csv)
+
+
+def test_scoring_reads_only_the_latest_snapshot(db, daily_csv):
+    older = daily_csv.copy()
+    older.loc[0, "days_since_last_contact"] = 111.0
+    newer = daily_csv.copy()
+    newer.loc[0, "days_since_last_contact"] = 222.0
+
+    # Newer date written FIRST: "latest" must mean the highest as_of_date, not the
+    # most recent write.
+    loader.upsert_daily_students_db(newer, DAY_2)
+    loader.upsert_daily_students_db(older, DAY_1)
+
+    from_db = loader.load_daily_students_db().set_index("student_id")
+    assert len(from_db) == len(daily_csv)
+    assert from_db.loc[daily_csv.loc[0, "student_id"], "days_since_last_contact"] == 222.0
+    assert loader.latest_as_of_date_db() == DAY_2
+
+
+def test_latest_as_of_date_is_none_for_an_empty_table(db):
+    assert loader.latest_as_of_date_db() is None
+
+
+def test_history_window_returns_only_snapshots_in_range(db, daily_csv):
+    for day in (date(2026, 8, 1), date(2026, 8, 25), date(2026, 9, 1)):
+        loader.upsert_daily_students_db(daily_csv, day)
+
+    history = loader.load_student_history_db(date(2026, 9, 1), days=10)
+
+    assert set(history["as_of_date"].dt.date) == {date(2026, 8, 25), date(2026, 9, 1)}
+    assert len(history) == 2 * len(daily_csv)
+
+
+def test_trend_from_two_stored_snapshots(db, daily_csv):
+    """The acceptance case: two loads a week apart give a 7-day delta, and no 28-day one."""
+    from src.data.features import add_trend_features
+
+    first = daily_csv.copy()
+    second = daily_csv.copy()
+    second["program_adherence_rate"] = first["program_adherence_rate"] + 0.1
+    loader.upsert_daily_students_db(first, DAY_1)
+    loader.upsert_daily_students_db(second, DAY_2)
+
+    current = loader.load_daily_students_db()
+    history = loader.load_student_history_db(DAY_2, days=31)
+    out = add_trend_features(current, history, DAY_2, {"program_adherence_rate": [7, 28]})
+
+    assert ((out["program_adherence_rate_delta_7d"] - 0.1).abs() < 1e-9).all()
+    assert (out["program_adherence_rate_delta_7d_missing"] == 0).all()
+    assert out["program_adherence_rate_delta_28d"].isna().all()
+    assert (out["program_adherence_rate_delta_28d_missing"] == 1).all()
 
 
 # --- the alert log ----------------------------------------------------------

@@ -16,20 +16,25 @@
 -- database (every statement is IF NOT EXISTS), but that database is untracked.
 
 
--- Today's students to score: the id columns natively, every model feature packed
--- into `features`.
+-- Snapshot of students to score on a given date.
+-- student_id + as_of_date form the primary key so the same student can appear
+-- on multiple scoring dates without overwriting previous rows.
 --
--- Why JSONB instead of 24 typed columns: the feature list is per client. EO-Churn
--- is meant to be re-pointed at a new dataset by editing config.FEATURES, and a
--- typed table would turn every such change into a migration. The trade-off is that
--- the database does not type-check feature values — src/data/loader.py does, by
--- coercing them back to numeric on read.
+-- Features are stored as JSONB rather than typed columns because the feature
+-- list is client-specific (see config.FEATURES). Re-pointing EO-Churn at a new
+-- dataset should not require a migration. The trade-off is that the database
+-- does not enforce feature types or presence — src/data/loader.py does that
+-- by coercing values back to numeric on read.
 CREATE TABLE IF NOT EXISTS daily_students (
-    student_id      TEXT PRIMARY KEY,
+    student_id      TEXT        NOT NULL,
     enrollment_date DATE,
     features        JSONB       NOT NULL,
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    as_of_date      DATE        NOT NULL,
+    PRIMARY KEY (student_id, as_of_date)
 );
+
+CREATE INDEX IF NOT EXISTS daily_students_as_of_idx ON daily_students (as_of_date);
 
 
 -- One row per at-risk student per run. Append-only: history is the point, since
@@ -39,9 +44,13 @@ CREATE TABLE IF NOT EXISTS daily_students (
 -- CSV/DB switch is that both backends produce the same numbers, and NUMERIC(5,4)
 -- would silently round 0.648649 to 0.6486. It also reaches Python as a float rather
 -- than a Decimal, which is what the API and the dashboard expect.
+
+-- IMPORTANT: student_id column is now no longer a foreign key to daily_students.student_id. 
+-- In the daily_students table student_id is now part of a composite primary key (student_id, as_of_date) and the foreign key constraint has been dropped. 
+-- This change was made to allow for multiple entries of the same student on different dates without violating the uniqueness constraint.
 CREATE TABLE IF NOT EXISTS alerts (
     id                 SERIAL PRIMARY KEY,
-    student_id         TEXT        NOT NULL REFERENCES daily_students(student_id),
+    student_id         TEXT        NOT NULL,
     run_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     churn_probability  DOUBLE PRECISION NOT NULL,
     status             TEXT        NOT NULL CHECK (status IN ('new', 'still_at_risk')),
