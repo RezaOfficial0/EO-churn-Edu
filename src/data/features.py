@@ -47,13 +47,6 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
-# Rows missing any of these are dropped from the training data - there is no
-# sensible value to impute for them.
-UNIMPUTABLE_REQUIRED = [
-    "mentor_contact_freq_per_month",
-    "message_response_time_hours",
-]
-
 # {column that may be missing: name of its 0/1 "was missing" flag}
 MISSING_FLAG_COLUMNS = {
     "weekly_study_hours_actual": "weekly_study_hours_actual_missing",
@@ -187,14 +180,32 @@ RAW_FEATURE_COLUMNS += [
 # still a row the model knows how to score. A null in any other column has nothing
 # behind it - `drop_unimputable_rows` is the training-time counterpart, and this is
 # the same decision made per row at serving time instead of per frame.
-#
-# Broader than UNIMPUTABLE_REQUIRED on purpose. That list is what the ONE raw file
-# we trained on happened to have nulls in; incoming customer data may have them
-# anywhere, and a null `plan_type` or `grade` reaches CatBoost as an unseen category
-# rather than as an error.
 SERVING_REQUIRED_COLUMNS = [
     column for column in RAW_FEATURE_COLUMNS if column not in MISSING_FLAG_COLUMNS
 ]
+
+# Training drops exactly the rows serving would quarantine. One definition, both
+# sides, derived from the feature set - so a feature added or removed later keeps
+# them in step by construction.
+#
+# These were two different lists until a customer export was run through training
+# for the first time. UNIMPUTABLE_REQUIRED was a hand-written pair of columns: the
+# ones the ONE file we trained on happened to have nulls in. The comment here used
+# to say the difference was deliberate, on the grounds that "a null `plan_type` or
+# `grade` reaches CatBoost as an unseen category rather than as an error". That is
+# not what happens. CatBoost refuses a NaN in a categorical feature outright:
+#
+#     CatBoostError: bad object for id: nan
+#     Invalid type for cat_feature[...]=nan : cat_features must be integer or
+#     string, real number values and NaN values should be converted to string.
+#
+# Nothing in that names the column or the student, and a blank "parent involvement"
+# cell is ordinary in a real export - so the first customer file was where it fired.
+# The old list was also wrong in the other direction: it held
+# `mentor_contact_freq_per_month`, which the B-21 audit parks and
+# drop_audited_out_columns discards a few lines later. Training was throwing away
+# rows over a column the model never sees.
+UNIMPUTABLE_REQUIRED = SERVING_REQUIRED_COLUMNS
 
 
 def add_monthly_value(df: pd.DataFrame) -> pd.DataFrame:
@@ -233,7 +244,12 @@ def add_monthly_value(df: pd.DataFrame) -> pd.DataFrame:
 
 def drop_unimputable_rows(df: pd.DataFrame) -> pd.DataFrame:
     """Training only: drop rows with a null in an unimputable column."""
-    return df.dropna(subset=UNIMPUTABLE_REQUIRED).reset_index(drop=True)
+    # Sadece GELEN kolonlara bak. Eksik bir zorunlu kolon burada pandas'tan
+    # bir KeyError olarak degil, birkac satir sonra validate()'in cerceve
+    # kapisindan adiyla birlikte raporlanmali - "missing required columns:
+    # ['plan_type']" okunur, KeyError okunmaz.
+    mevcut = [c for c in UNIMPUTABLE_REQUIRED if c in df.columns]
+    return df.dropna(subset=mevcut).reset_index(drop=True)
 
 
 def add_missing_flags(df: pd.DataFrame) -> pd.DataFrame:

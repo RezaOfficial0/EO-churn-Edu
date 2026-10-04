@@ -10,6 +10,7 @@ import pytest
 import src.data.features as features_module
 from config import (
     AUDITED_OUT_FEATURES,
+    CAT_COLS,
     CONTACT_FEATURES,
     CONTACT_LAG_DAYS,
     FEATURES,
@@ -22,6 +23,7 @@ from src.data.features import (
     MISSING_FLAG_COLUMNS,
     RAW_FEATURE_COLUMNS,
     SERVING_REQUIRED_COLUMNS,
+    UNIMPUTABLE_REQUIRED,
     add_missing_flags,
     add_monthly_value,
     apply_contact_lag,
@@ -32,6 +34,7 @@ from src.data.features import (
     drop_unimputable_rows,
     fit_imputation,
 )
+from src.data.validation import quarantine_unusable_rows
 
 # Median-by-plan_type values learned from the full training data (see test below
 # that they match) - used to exercise the serving path without retraining.
@@ -58,9 +61,7 @@ def test_learned_imputation_matches_the_hardcoded_values(raw_df):
 
 
 def test_missing_flags_are_1_exactly_where_the_value_was_null(raw_df):
-    kept = raw_df.dropna(
-        subset=["mentor_contact_freq_per_month", "message_response_time_hours"]
-    )
+    kept = raw_df.dropna(subset=UNIMPUTABLE_REQUIRED)
     engineered, _ = build_training_frame(raw_df)
     engineered = engineered.sort_values("student_id").reset_index(drop=True)
     kept = kept.sort_values("student_id").reset_index(drop=True)
@@ -87,20 +88,41 @@ def test_serving_frame_keeps_every_row_and_fills_every_null(daily_df):
 
 
 def _tiny_raw():
-    """Five rows, two plans, a null in each imputable column, one unimputable null.
+    """Bes satir, iki plan, doldurulabilir her kolonda birer bosluk.
 
-    S4 is the row training drops (no mentor_contact_freq_per_month); every other row
-    survives, so each group still has a value to take a median of.
+    S4'un `mentor_contact_freq_per_month` degeri yok. Eskiden egitim bu yuzden
+    S4'u atiyordu; artik atmiyor, cunku o kolonu B-21 denetimi feature setinden
+    cikardi ve model onu hic gormuyor. Bir satiri, modelin kullanmadigi bir
+    kolon bos diye atmak veriyi bosuna harcamakti.
+
+    S5'in `parent_involvement` degeri yok: ATILAN satir artik bu. Kategorik bir
+    bosluk impute edilemez ve CatBoost kategorik bir alanda NaN'i kabul etmez -
+    skorlamada da ayni satir karantinaya aliniyor. Iki taraf ayni kurali
+    uyguluyor, test de bunu tutuyor.
     """
     return pd.DataFrame(
         {
             "student_id": ["S1", "S2", "S3", "S4", "S5"],
+            "grade": ["11. Sınıf", "12. Sınıf", "Mezun", "11. Sınıf", "12. Sınıf"],
+            "track": ["Sayısal", "Sözel", "Sayısal", "Dil", "Sayısal"],
+            "city_tier": ["Tier 1", "Tier 2", "Tier 1", "Tier 3", "Tier 2"],
+            "parent_involvement": ["Yüksek", "Orta", "Orta", "Düşük", None],
             "plan_type": ["Aylık", "Aylık", "Yıllık", "Yıllık", "Yıllık"],
             "monthly_fee_try": [1800.0, 1800.0, 16730.0, 16730.0, 16730.0],
+            "tenure_months": [3.0, 9.0, 14.0, 2.0, 7.0],
+            "program_adherence_rate": [0.8, 0.6, 0.9, 0.5, 0.7],
+            "weekly_study_hours_planned": [12.0, 10.0, 14.0, 9.0, 11.0],
             "weekly_study_hours_actual": [10.0, None, 4.0, 8.0, 6.0],
             "satisfaction_survey_score": [4.0, 3.0, None, 2.0, 5.0],
             "mentor_contact_freq_per_month": [5.0, 5.0, 5.0, None, 5.0],
             "message_response_time_hours": [2.0, 2.0, 2.0, 2.0, 2.0],
+            "late_response_count_30d": [1, 0, 2, 3, 1],
+            "trial_exam_count_total": [8, 12, 20, 4, 10],
+            "trial_exam_avg_net": [50.0, 44.0, 61.0, 38.0, 55.0],
+            "trial_exam_score_trend": [1.2, -0.4, 2.0, -1.8, 0.3],
+            "missed_trial_exam_count": [0, 1, 0, 3, 1],
+            "payment_delay_days_avg": [0.0, 2.0, 0.0, 9.0, 1.0],
+            "support_ticket_count_90d": [0, 1, 0, 2, 1],
         }
     )
 
@@ -141,12 +163,45 @@ def test_an_unknown_plan_treats_the_price_as_monthly_and_says_so(caplog):
 
 
 def test_only_unimputable_nulls_drop_a_training_row():
-    """S4 has no mentor_contact_freq_per_month - nothing sensible to fill. S2 and S3
-    are missing values the recipe CAN fill, so they stay."""
+    """Atilan satir, SKORLAMANIN da karantinaya alacagi satirdir.
+
+    S5'in `parent_involvement`'i yok: kategorik bir boslugun arkasinda hicbir sey
+    yok, impute edilemez, ve CatBoost kategorik bir alanda NaN'i reddediyor.
+    S2 ve S3'un bosluklari tarifin DOLDURABILDIGI kolonlarda, kaliyorlar.
+    S4'un `mentor_contact_freq_per_month`'u yok ama o kolon B-21 ile feature
+    setinden cikti - modelin gormedigi bir kolon yuzunden satir atilmaz.
+    """
     kept = drop_unimputable_rows(_tiny_raw())
 
-    assert kept["student_id"].tolist() == ["S1", "S2", "S3", "S5"]
+    assert kept["student_id"].tolist() == ["S1", "S2", "S3", "S4"]
     assert kept.index.tolist() == [0, 1, 2, 3]  # reset, so later .iloc/.loc agree
+
+
+def test_training_and_serving_agree_on_what_an_unusable_row_is():
+    """Iki taraf TEK bir tanimi paylasmali.
+
+    Ayri durduklarinda ikisi de yanlisti: egitim, modelin gormedigi bir kolon
+    bos diye satir atiyor; skorlamanin atacagi satiri ise atmiyor ve o satir
+    CatBoost'a ulasip `CatBoostError: bad object for id: nan` uretiyordu. O
+    mesajda ne kolon adi var ne ogrenci. Ilk gercek musteri disa aktariminda
+    patlayan sey tam olarak buydu.
+    """
+    assert UNIMPUTABLE_REQUIRED == SERVING_REQUIRED_COLUMNS
+
+    ham = _tiny_raw()
+    egitimde_kalan = set(drop_unimputable_rows(ham)["student_id"])
+    kullanilabilir, _ = quarantine_unusable_rows(ham, SERVING_REQUIRED_COLUMNS)
+    skorlamada_kalan = set(kullanilabilir["student_id"])
+
+    assert egitimde_kalan == skorlamada_kalan
+
+
+def test_a_null_category_never_reaches_the_model():
+    """Kategorik bos hucre gercek disa aktarimlarda siradan; model onu hic gormemeli."""
+    engineered, _ = build_training_frame(_tiny_raw())
+    for kolon in CAT_COLS:
+        if kolon in engineered.columns:
+            assert engineered[kolon].isnull().sum() == 0, kolon
 
 
 def test_missing_flags_are_added_before_the_values_are_filled():
@@ -165,17 +220,20 @@ def test_missing_flags_are_added_before_the_values_are_filled():
 def test_imputation_learns_a_median_per_plan_plus_a_global_fallback():
     learned = fit_imputation(add_missing_flags(drop_unimputable_rows(_tiny_raw())))
 
-    # Aylık study hours: [10.0, null] -> 10.0. Yıllık: [4.0, 6.0] -> 5.0.
-    # _global is the median over every kept row, [10.0, 4.0, 6.0] -> 6.0.
+    # Kalan satirlar S1, S2, S3, S4 (S5 kategorik boslugu yuzunden atildi).
+    # Aylık study hours: [10.0, null] -> 10.0. Yıllık: [4.0, 8.0] -> 6.0.
+    # _global, kalan her satirin medyani: [10.0, 4.0, 8.0] -> 8.0.
     assert learned["weekly_study_hours_actual"] == {
         "Aylık": 10.0,
-        "Yıllık": 5.0,
-        "_global": 6.0,
+        "Yıllık": 6.0,
+        "_global": 8.0,
     }
+    # Aylık satisfaction: [4.0, 3.0] -> 3.5. Yıllık: [null, 2.0] -> 2.0.
+    # _global: [4.0, 3.0, 2.0] -> 3.0.
     assert learned["satisfaction_survey_score"] == {
         "Aylık": 3.5,
-        "Yıllık": 5.0,
-        "_global": 4.0,
+        "Yıllık": 2.0,
+        "_global": 3.0,
     }
     # Group keys are strings and values floats: this dict is written into
     # model_meta.json and read back at serving time.

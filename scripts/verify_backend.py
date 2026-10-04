@@ -160,11 +160,24 @@ def main() -> int:
         return report()
     ok(f"{len(students)} student(s), {len(students.columns)} column(s)")
 
-    from src.data.features import RAW_FEATURE_COLUMNS
+    from src.data.features import RAW_FEATURE_COLUMNS, drop_audited_out_columns
     from src.data.validation import DataValidationError, validate
 
     try:
-        validate(students, config.STUDENT_INFO + RAW_FEATURE_COLUMNS, max_null_ratio=1.0)
+        # daily_pipeline.py:116 ile AYNI sira: once B-21'de feature setinden
+        # cikarilan kolonlari ADIYLA dusur, sonra cerceve kapisini uygula.
+        # "Kabul edilir ve bilerek yok sayilir" demek bu; musteri disa aktarimi
+        # bu kolonlari gondermeye devam ediyor ve onlari sildirmek bize dusmez.
+        #
+        # allow_extra_columns=True KULLANMA: o, adi hic yazilmamis bir kolonu da
+        # sessizce gecirir - yani yanlis yazilmis bir kolon adini. Kapinin var
+        # olma sebebi tam olarak o durum. Betik 3/8'de bu yuzden oluyordu ve
+        # 4-8 arasi adimlar hic calismamisti.
+        validate(
+            drop_audited_out_columns(students),
+            config.STUDENT_INFO + RAW_FEATURE_COLUMNS,
+            max_null_ratio=1.0,
+        )
         ok("passes validation (columns, ids, duplicates)")
     except DataValidationError as e:
         fail(f"validation: {e}")

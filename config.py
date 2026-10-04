@@ -625,7 +625,8 @@ TELEGRAM_CHAT_ID = _env_secret("TELEGRAM_CHAT_ID") or None
 
 # Email over SMTP. SMTP_TO is comma-separated.
 SMTP_HOST = os.environ.get("SMTP_HOST") or None
-SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+# Bos bir SMTP_PORT= satiri int("") ile cokerdi; ayni kalip LLM_TIMEOUT'ta yasandi.
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "").strip() or "587")
 SMTP_USER = _env_secret("SMTP_USER") or None
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD") or None
 SMTP_FROM = os.environ.get("SMTP_FROM") or SMTP_USER
@@ -700,6 +701,12 @@ OPS_ALERT_WEBHOOK_URL = _env_secret("OPS_ALERT_WEBHOOK_URL") or None
 #LLM______________________________________________________-
 LLM_SERVICE_URL = os.environ.get("LLM_SERVICE_URL") or None
 LLM_SERVICE_KEY = os.environ.get("LLM_SERVICE_KEY") or None
-LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", 180))
-CAMPAIGN_FEATURE =os.environ.get("CAMPAIGN_FEATURE", "false").lower() not in {"false", "0", "no"}
+LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "").strip() or "180")
+# Varsayilan, degisken TANIMSIZ oldugunda devreye giriyordu; .env'de BOS
+# olarak tanimliysa deger "" oluyor, "" ise kume icinde olmadigi icin ozellik
+# ACILIYOR. Yani .env'i olmayan bir kurulumda kapali olan sey, sablonu
+# kopyalayinca aciliyordu. .strip() or "false" bunu kapatir.
+CAMPAIGN_FEATURE = (
+    os.environ.get("CAMPAIGN_FEATURE", "").strip().lower() or "false"
+) not in {"false", "0", "no"}
 ALERT_WEBHOOK_URL = _env_secret("ALERT_WEBHOOK_URL") or None

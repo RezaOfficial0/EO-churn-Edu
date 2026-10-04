@@ -1,0 +1,35 @@
+{
+  "customer_id": "demo_edu",
+  "note": "Musterinin disa aktarim basliklari -> EO-Churn kanonik kolon adlari. Bu dosya MUSTERIYE OZEL tek parcadir; cekirdek kod degismez.",
+  "columns": {
+    "ogrenci_no": "student_id",
+    "Kayıt Tarihi": "enrollment_date",
+    "Sınıf": "grade",
+    "Alan": "track",
+    "Sehir Grubu": "city_tier",
+    "Veli İlgi Düzeyi": "parent_involvement",
+    "Paket": "plan_type",
+    "Paket Ücreti (TL)": "monthly_fee_try",
+    "Üyelik Süresi (ay)": "tenure_months",
+    "Program Uyum Oranı": "program_adherence_rate",
+    "Planlanan Haftalık Çalışma": "weekly_study_hours_planned",
+    "Gerçekleşen Haftalık Çalışma": "weekly_study_hours_actual",
+    "Aylık Mentor Görüşme Sayısı": "mentor_contact_freq_per_month",
+    "Son Görüşmeden Bu Yana (gün)": "days_since_last_contact",
+    "Mesaj Yanıt Süresi (saat)": "message_response_time_hours",
+    "30 Günde Geç Yanıt": "late_response_count_30d",
+    "Toplam Deneme Sayısı": "trial_exam_count_total",
+    "Deneme Net Ortalaması": "trial_exam_avg_net",
+    "Deneme Trendi": "trial_exam_score_trend",
+    "Katılmadığı Deneme": "missed_trial_exam_count",
+    "Ortalama Ödeme Gecikmesi (gün)": "payment_delay_days_avg",
+    "90 Günde Destek Talebi": "support_ticket_count_90d",
+    "Memnuniyet Puanı": "satisfaction_survey_score",
+    "Sınava Kalan Gün": "days_to_next_exam",
+    "Durum": "churn"
+  },
+  "value_maps": {
+    "churn": {"ayrıldı": 1, "ayrildi": 1, "iptal": 1, "aktif": 0, "devam": 0}
+  },
+  "drop": ["CRM Kayıt No", "Öğrenci Danışmanı", "Son Fatura Durumu"]
+}
