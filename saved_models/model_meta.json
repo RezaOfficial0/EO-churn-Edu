@@ -1,9 +1,9 @@
 {
-  "trained_at": "2026-09-28T08:10:24Z",
+  "trained_at": "2026-10-04T08:56:03Z",
   "is_synthetic_data": true,
-  "data_file": "data/mentorluk_churn_veriseti.csv",
-  "data_rows": 3384,
-  "data_sha256": "f0c092fbdd4b9c1267e27a3c1eeacd1d86a5e70b81bda9f22f556865517cfccd",
+  "data_file": "data/MUSTERI_demo_edu.csv",
+  "data_rows": 1403,
+  "data_sha256": "dc5fd89f80bd460418e6581a4c1759131724e972221af2c0aca7a3ea4bff92ca",
   "features": [
     "grade",
     "track",
@@ -39,149 +39,149 @@
     "depth": 4,
     "learning_rate": 0.05
   },
-  "catboost_tree_count": 61,
+  "catboost_tree_count": 282,
   "decision_cost": {
     "false_alarm": 1,
     "missed_churn": 3
   },
-  "chosen_threshold": 0.29,
+  "chosen_threshold": 0.27,
   "threshold_selection": {
-    "threshold": 0.29,
-    "expected_cost": 409,
-    "false_alarms": 175,
-    "missed_churns": 78
+    "threshold": 0.27,
+    "expected_cost": 135,
+    "false_alarms": 66,
+    "missed_churns": 23
   },
   "imputation_values": {
     "weekly_study_hours_actual": {
-      "3 Aylık": 9.0,
-      "Aylık": 9.0,
-      "Yıllık": 9.2,
-      "_global": 9.0
+      "3 Aylık": 9.3,
+      "Aylık": 9.4,
+      "Yıllık": 9.350000000000001,
+      "_global": 9.4
     },
     "satisfaction_survey_score": {
-      "3 Aylık": 3.5,
-      "Aylık": 3.6,
-      "Yıllık": 3.6,
-      "_global": 3.6
+      "3 Aylık": 3.8,
+      "Aylık": 3.7,
+      "Yıllık": 3.7,
+      "_global": 3.7
     }
   },
   "calibration_method": "sigmoid",
   "calibration_degraded": false,
   "calibrator_path": "saved_models/calibrator.joblib",
   "metrics": {
-    "threshold": 0.29,
-    "roc_auc": 0.5995237675280007,
-    "average_precision": 0.3688127330223405,
-    "precision": 0.3283018867924528,
-    "recall": 0.47282608695652173,
-    "f1": 0.38752783964365256,
+    "threshold": 0.27,
+    "roc_auc": 0.8098454423755628,
+    "average_precision": 0.6548620636771544,
+    "precision": 0.48484848484848486,
+    "recall": 0.7710843373493976,
+    "f1": 0.5953488372093023,
     "precision_at_k_requested": 20,
     "precision_at_k_effective": 20,
-    "precision_at_20": 0.35,
-    "lift_at_20": 1.2877717391304346,
+    "precision_at_20": 0.7,
+    "lift_at_20": 2.369879518072289,
     "confusion_matrix": [
       [
-        315,
-        178
+        130,
+        68
       ],
       [
-        97,
-        87
+        19,
+        64
       ]
     ],
-    "brier_score": 0.19298771697280645,
-    "brier_score_uncalibrated": 0.23557856544489142,
-    "roc_auc_uncalibrated": 0.5995237675280007,
-    "average_precision_uncalibrated": 0.3688127330223405,
-    "distinct_scores": 677,
-    "distinct_scores_uncalibrated": 677
+    "brier_score": 0.15290323244310186,
+    "brier_score_uncalibrated": 0.1645781370606158,
+    "roc_auc_uncalibrated": 0.8098454423755628,
+    "average_precision_uncalibrated": 0.6548620636771544,
+    "distinct_scores": 281,
+    "distinct_scores_uncalibrated": 281
   },
-  "cv_auc_mean": 0.6404698669510489,
-  "cv_auc_std": 0.03562537622073139,
+  "cv_auc_mean": 0.7933463833084353,
+  "cv_auc_std": 0.019879470679328416,
   "baseline_metrics": {
     "logistic_regression": {
-      "roc_auc": 0.6049365023370668,
-      "average_precision": 0.3792225016957455
+      "roc_auc": 0.8220761835219667,
+      "average_precision": 0.6657447040970406
     },
     "single_rule": {
       "column": "message_response_time_hours",
-      "roc_auc": 0.5806728988446953,
-      "average_precision": 0.3494267691161249
+      "roc_auc": 0.6393148350979676,
+      "average_precision": 0.42341606353605166
     }
   },
   "error_analysis_false_negatives": {
     "grade": {
       "11. Sınıf": {
-        "churners": 46,
-        "missed": 26
+        "churners": 21,
+        "missed": 4
       },
       "12. Sınıf": {
-        "churners": 85,
-        "missed": 44
+        "churners": 36,
+        "missed": 10
       },
       "Mezun": {
-        "churners": 53,
-        "missed": 27
+        "churners": 26,
+        "missed": 5
       }
     },
     "track": {
       "Dil": {
-        "churners": 7,
-        "missed": 4
+        "churners": 3,
+        "missed": 1
       },
       "Eşit Ağırlık": {
-        "churners": 58,
-        "missed": 27
+        "churners": 31,
+        "missed": 7
       },
       "Sayısal": {
-        "churners": 89,
-        "missed": 49
+        "churners": 40,
+        "missed": 10
       },
       "Sözel": {
-        "churners": 30,
-        "missed": 17
+        "churners": 9,
+        "missed": 1
       }
     },
     "city_tier": {
       "Tier 1 (Büyükşehir)": {
-        "churners": 111,
-        "missed": 62
+        "churners": 40,
+        "missed": 9
       },
       "Tier 2": {
-        "churners": 49,
-        "missed": 25
+        "churners": 20,
+        "missed": 4
       },
       "Tier 3": {
-        "churners": 24,
-        "missed": 10
+        "churners": 23,
+        "missed": 6
       }
     },
     "parent_involvement": {
       "Düşük": {
-        "churners": 40,
-        "missed": 17
+        "churners": 17,
+        "missed": 3
       },
       "Orta": {
-        "churners": 86,
-        "missed": 44
+        "churners": 38,
+        "missed": 7
       },
       "Yüksek": {
-        "churners": 58,
-        "missed": 36
+        "churners": 28,
+        "missed": 9
       }
     },
     "plan_type": {
       "3 Aylık": {
-        "churners": 68,
-        "missed": 39
+        "churners": 34,
+        "missed": 10
       },
       "Aylık": {
-        "churners": 80,
-        "missed": 40
+        "churners": 31,
+        "missed": 6
       },
       "Yıllık": {
-        "churners": 36,
-        "missed": 18
+        "churners": 18,
+        "missed": 3
       }
     }
   }
