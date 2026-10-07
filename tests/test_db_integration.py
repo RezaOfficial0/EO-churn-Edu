@@ -43,7 +43,7 @@ def db(monkeypatch, isolate_backend):
 
     with engine.begin() as connection:
         connection.exec_driver_sql(SCHEMA_SQL)
-        connection.exec_driver_sql("TRUNCATE alerts, daily_students RESTART IDENTITY CASCADE")
+        connection.exec_driver_sql("TRUNCATE alerts, runs, daily_students RESTART IDENTITY CASCADE")
 
     yield engine
 
@@ -249,3 +249,122 @@ def test_one_run_gets_one_timestamp(db, daily_csv):
 
     assert loader.latest_run_alerts_db()["run_at"].nunique() == 1
     assert len(loader.latest_run_alerts_db()) == 5
+
+
+# --- runs (B-04) ------------------------------------------------------------
+def _days_ago(n):
+    return datetime.now(timezone.utc) - timedelta(days=n)
+
+
+def _runs(engine):
+    with engine.connect() as c:
+        return c.exec_driver_sql(
+            "SELECT status, at_risk_count, entity_count, threshold, model_version "
+            "FROM runs ORDER BY started_at, run_id"
+        ).fetchall()
+
+
+def test_two_runs_in_a_row_mark_repeats_and_are_both_recorded(db):
+    first = loader.record_run_db(
+        _alerts(["A", "B"]).drop(columns="status"), started_at=_days_ago(1),
+        model_version="v1", threshold=0.4, entity_count=10,
+    )
+    second = loader.record_run_db(
+        _alerts(["B", "C"]).drop(columns="status"), started_at=_days_ago(0),
+        model_version="v1", threshold=0.4, entity_count=10,
+    )
+
+    assert list(first["status"]) == ["new", "new"]
+    assert dict(zip(second["student_id"], second["status"])) == {"B": "still_at_risk", "C": "new"}
+    assert _runs(db) == [("ok", 2, 10, 0.4, "v1"), ("ok", 2, 10, 0.4, "v1")]
+    with db.connect() as c:
+        per_run = c.exec_driver_sql(
+            "SELECT run_id, count(*) FROM alerts GROUP BY run_id ORDER BY run_id"
+        ).fetchall()
+    assert [n for _, n in per_run] == [2, 2]
+
+
+def test_a_run_with_nobody_at_risk_is_recorded_and_is_the_previous_run(db):
+    """The silence case: the run still leaves a row, and the next run compares
+    against it - not against the older run that did flag someone."""
+    loader.record_run_db(_alerts(["A"]).drop(columns="status"), started_at=_days_ago(2))
+    empty = loader.record_run_db(
+        _alerts([]).drop(columns="status"), started_at=_days_ago(1), entity_count=10
+    )
+    assert empty.empty
+    assert [r[:2] for r in _runs(db)] == [("ok", 1), ("no_alerts", 0)]
+    assert loader.latest_run_db()["status"] == "no_alerts"
+    # Yesterday nobody was at risk, so today's message must not resend the older list.
+    assert loader.latest_run_alerts_db().empty
+    assert loader.previous_at_risk_ids_db() == set()
+
+    third = loader.record_run_db(_alerts(["A"]).drop(columns="status"), started_at=_days_ago(0))
+    assert list(third["status"]) == ["new"]  # not still_at_risk from two runs ago
+    assert loader.previous_run_probabilities_db() == {}
+
+
+def test_a_second_run_on_the_same_day_is_refused(db):
+    loader.record_run_db(_alerts(["A"]).drop(columns="status"), started_at=_days_ago(0))
+    with pytest.raises(loader.RunAlreadyRecordedError):
+        loader.record_run_db(_alerts(["A", "B"]).drop(columns="status"), started_at=_days_ago(0))
+
+    assert len(_runs(db)) == 1
+    with db.connect() as c:
+        assert c.exec_driver_sql("SELECT count(*) FROM alerts").scalar() == 1
+
+
+def test_concurrent_runs_record_exactly_one(db):
+    """Two runs racing for the same day: one is recorded, the other refused - the
+    microsecond run_at used to let both through and double-count every student."""
+    import threading
+
+    barrier = threading.Barrier(2)
+    outcomes = []
+
+    def run():
+        barrier.wait()
+        try:
+            loader.record_run_db(
+                _alerts(["A", "B", "C"]).drop(columns="status"),
+                started_at=datetime.now(timezone.utc),
+            )
+            outcomes.append("recorded")
+        except loader.RunAlreadyRecordedError:
+            outcomes.append("refused")
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert sorted(outcomes) == ["recorded", "refused"]
+    assert len(_runs(db)) == 1
+    with db.connect() as c:
+        assert c.exec_driver_sql("SELECT count(*) FROM alerts").scalar() == 3
+
+
+def test_a_failed_run_is_recorded_and_does_not_block_the_retry(db):
+    loader.record_failed_run_db(started_at=_days_ago(0), model_version="v1", threshold=0.4)
+    assert loader.latest_run_db()["status"] == "failed"
+
+    loader.record_run_db(_alerts(["A"]).drop(columns="status"), started_at=_days_ago(0))
+    assert [r[0] for r in _runs(db)] == ["failed", "ok"]
+    assert loader.latest_run_db()["status"] == "ok"
+
+
+def test_the_daily_pipeline_records_a_failure(db, monkeypatch):
+    from pipeline import daily_pipeline
+
+    monkeypatch.setattr(loader, "DATA_SOURCE", "db")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("export is broken")
+
+    monkeypatch.setattr(daily_pipeline, "score_students", broken)
+    with pytest.raises(RuntimeError, match="export is broken"):
+        daily_pipeline.run_daily_pipeline(
+            model=None, explainer=None, imputation_values={}, threshold=0.4,
+            model_version="v1",
+        )
+    assert _runs(db) == [("failed", None, None, 0.4, "v1")]

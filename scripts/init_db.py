@@ -64,6 +64,18 @@ EXPECTED = {
         "status",
         "top_reasons",
         "top_reasons_detail",
+        "run_id",
+    },
+    "runs": {
+        "run_id",
+        "run_date",
+        "started_at",
+        "finished_at",
+        "model_version",
+        "threshold",
+        "entity_count",
+        "at_risk_count",
+        "status",
     },
 }
 

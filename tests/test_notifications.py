@@ -397,6 +397,7 @@ def _script():
 def test_no_recorded_run_refuses_to_send(monkeypatch, capsys):
     script = _script()
     empty = pd.DataFrame(columns=["student_id", "churn_probability", "status", "run_at"])
+    monkeypatch.setattr(script, "latest_run", lambda: None)
     monkeypatch.setattr(script, "latest_run_alerts", lambda: empty)
     monkeypatch.setattr(sys := __import__("sys"), "argv", ["send_daily_alerts.py"])
 
@@ -417,6 +418,7 @@ def test_stale_run_refuses_to_send(monkeypatch, capsys):
         [{"student_id": "S1", "churn_probability": 0.5, "status": "new",
           "top_reasons": "", "top_reasons_detail": [], "run_at": old_run.isoformat()}]
     )
+    monkeypatch.setattr(script, "latest_run", lambda: {"started_at": old_run, "status": "ok"})
     monkeypatch.setattr(script, "latest_run_alerts", lambda: stale)
     monkeypatch.setattr(script, "todays_students", lambda: None)
     monkeypatch.setattr(__import__("sys"), "argv", ["send_daily_alerts.py"])
@@ -438,6 +440,7 @@ def test_force_sends_a_stale_run_anyway(monkeypatch):
         [{"student_id": "S1", "churn_probability": 0.5, "status": "new",
           "top_reasons": "", "top_reasons_detail": [], "run_at": old_run.isoformat()}]
     )
+    monkeypatch.setattr(script, "latest_run", lambda: {"started_at": old_run, "status": "ok"})
     monkeypatch.setattr(script, "latest_run_alerts", lambda: stale)
     monkeypatch.setattr(script, "todays_students", lambda: None)
     monkeypatch.setattr(__import__("sys"), "argv", ["send_daily_alerts.py", "--force"])
@@ -447,23 +450,51 @@ def test_force_sends_a_stale_run_anyway(monkeypatch):
 
 
 def test_a_fresh_run_with_no_at_risk_students_still_sends(monkeypatch):
-    """A real run that found nobody at risk IS worth reporting - that is good news."""
+    """A real run that found nobody at risk IS worth reporting - that is good news.
+    It is a `no_alerts` run: no alert rows, but a run, so no --force is needed."""
     script = _script()
     from datetime import datetime, timezone
 
-    # A run happened; it just has no rows above the threshold. The alert log is
-    # empty for that run, so --force is what distinguishes it today.
+    monkeypatch.setattr(
+        script,
+        "latest_run",
+        lambda: {"started_at": datetime.now(timezone.utc), "status": "no_alerts"},
+    )
+    monkeypatch.setattr(
+        script,
+        "latest_run_alerts",
+        lambda: pd.DataFrame(columns=["student_id", "churn_probability", "status", "run_at"]),
+    )
+    monkeypatch.setattr(script, "todays_students", lambda: None)
+    monkeypatch.setattr(script, "earlier_probabilities", lambda: {})
+    monkeypatch.setattr(__import__("sys"), "argv", ["send_daily_alerts.py"])
+    sent = []
+    monkeypatch.setattr(script, "send_notifications", lambda *a, **k: sent.append(a) or {})
+
+    assert script.main() == 0
+    assert len(sent) == 1
+
+
+def test_a_failed_last_run_refuses_to_send(monkeypatch, capsys):
+    """The alerts on hand then belong to an older run; sending them would hide the failure."""
+    script = _script()
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(
+        script, "latest_run", lambda: {"started_at": datetime.now(timezone.utc), "status": "failed"}
+    )
     monkeypatch.setattr(
         script,
         "latest_run_alerts",
         lambda: pd.DataFrame(
-            [{"student_id": "S1", "churn_probability": 0.5, "status": "still_at_risk",
-              "top_reasons": "", "top_reasons_detail": [],
-              "run_at": datetime.now(timezone.utc).isoformat()}]
+            [{"student_id": "S1", "churn_probability": 0.5, "status": "new",
+              "top_reasons": "", "top_reasons_detail": [], "run_at": "2026-01-01T00:00:00Z"}]
         ),
     )
-    monkeypatch.setattr(script, "todays_students", lambda: None)
     monkeypatch.setattr(__import__("sys"), "argv", ["send_daily_alerts.py"])
-    monkeypatch.setattr(script, "send_notifications", lambda *a, **k: {})
+    sent = []
+    monkeypatch.setattr(script, "send_notifications", lambda *a, **k: sent.append(k) or {})
 
-    assert script.main() == 0
+    assert script.main() == 1
+    assert sent == []
+    assert "başarısız" in capsys.readouterr().err

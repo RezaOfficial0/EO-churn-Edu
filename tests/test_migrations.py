@@ -58,7 +58,7 @@ def empty_db():
         with engine.begin() as c:
             c.exec_driver_sql(
                 "DROP VIEW IF EXISTS alert_probs; "
-                "DROP TABLE IF EXISTS alerts, daily_students, schema_migrations CASCADE"
+                "DROP TABLE IF EXISTS alerts, runs, daily_students, schema_migrations CASCADE"
             )
 
     wipe()
@@ -124,7 +124,9 @@ def test_untracked_legacy_database_is_adopted(empty_db):
         indexes = {r[0] for r in c.exec_driver_sql("SELECT indexname FROM pg_indexes WHERE tablename='alerts'")}
         kept = c.exec_driver_sql("SELECT count(*) FROM alerts").scalar()
     assert dtype == "double precision"
-    assert "alerts_run_at_student_id_uidx" in indexes and "alerts_run_at_idx" not in indexes
+    # 002 created the (run_at, student_id) index; 004 replaced it with one per run.
+    assert "alerts_run_id_student_id_uidx" in indexes
+    assert not indexes & {"alerts_run_at_idx", "alerts_run_at_student_id_uidx"}
     assert kept == 1  # adopting never drops data
     assert _migrate(empty_db) == []
 
@@ -143,7 +145,7 @@ def test_history_migration_keeps_rows_and_allows_new_snapshots(empty_db):
             "INSERT INTO alerts (student_id, churn_probability, status) VALUES ('S1', 0.6, 'new')"
         )
 
-    _migrate(empty_db)  # applies 003 only
+    _migrate(empty_db, [p for p in init_db.migration_files() if p.name < "004"])  # 003 only
 
     with empty_db.begin() as c:
         carried = c.exec_driver_sql(
@@ -162,6 +164,38 @@ def test_history_migration_keeps_rows_and_allows_new_snapshots(empty_db):
     assert carried is True
     assert total == 2
     assert kept == 2
+
+def test_runs_migration_gives_every_legacy_alert_a_run(empty_db):
+    """004 on alerts written before `runs` existed: one run per distinct run_at, the
+    last one of a day stays 'ok' and earlier ones on that day become 'superseded'."""
+    _migrate(empty_db, [p for p in init_db.migration_files() if p.name < "004"])
+    with empty_db.begin() as c:
+        c.exec_driver_sql(
+            "INSERT INTO alerts (student_id, run_at, churn_probability, status) VALUES "
+            "('A', '2026-09-01 06:00+00', 0.6, 'new'), "
+            "('B', '2026-09-01 06:00+00', 0.7, 'new'), "
+            "('A', '2026-09-01 08:00+00', 0.6, 'still_at_risk'), "  # same day, re-run
+            "('A', '2026-09-02 06:00+00', 0.6, 'still_at_risk')"
+        )
+
+    _migrate(empty_db)
+
+    with empty_db.connect() as c:
+        runs = c.exec_driver_sql(
+            "SELECT run_date::text, status, at_risk_count FROM runs ORDER BY started_at"
+        ).fetchall()
+        orphans = c.exec_driver_sql("SELECT count(*) FROM alerts WHERE run_id IS NULL").scalar()
+        linked = c.exec_driver_sql(
+            "SELECT count(*) FROM alerts a JOIN runs r USING (run_id) WHERE a.run_at = r.started_at"
+        ).scalar()
+    assert runs == [
+        ("2026-09-01", "superseded", 2),
+        ("2026-09-01", "ok", 1),
+        ("2026-09-02", "ok", 1),
+    ]
+    assert orphans == 0
+    assert linked == 4
+
 
 def test_a_database_built_from_schema_sql_can_be_adopted(empty_db):
     """schema.sql applied directly gives an untracked database already in the current
@@ -214,7 +248,7 @@ def test_schema_sql_matches_the_migrations(empty_db):
     from_migrations = _shape(empty_db)
 
     with empty_db.begin() as c:
-        c.exec_driver_sql("DROP TABLE alerts, daily_students, schema_migrations CASCADE")
+        c.exec_driver_sql("DROP TABLE alerts, runs, daily_students, schema_migrations CASCADE")
         c.exec_driver_sql(SCHEMA_SQL)
     from_schema_sql = _shape(empty_db)
 

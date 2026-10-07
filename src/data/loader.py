@@ -20,6 +20,7 @@ import logging
 import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -29,6 +30,7 @@ from config import (
     DAILY_DATA_PATH,
     DATA_SOURCE,
     DATABASE_URL,
+    SCHEDULER_TIMEZONE,
     STUDENT_INFO,
 )
 from src.serialization import to_native
@@ -292,15 +294,25 @@ def previous_at_risk_ids_csv(alerts_path=DAILY_ALERTS_PATH) -> set[str]:
     return set(log.loc[log["run_at"] == last_run, _ID_COLUMN].astype(str))
 
 
-def previous_at_risk_ids_db() -> set[str]:
-    df = pd.read_sql(
-        _sql(
-            "SELECT student_id FROM alerts "
-            "WHERE run_at = (SELECT max(run_at) FROM alerts)"
-        ),
-        _get_engine(),
+# The last run that completed. A `no_alerts` run counts: it IS the previous run,
+# and nobody was on it. Looking only at `alerts` skipped it, compared today against
+# a stale list and called a student flagged three days ago `still_at_risk`.
+_LAST_COMPLETED_RUN = (
+    "SELECT run_id FROM runs WHERE status IN ('ok', 'no_alerts') "
+    "ORDER BY started_at DESC, run_id DESC LIMIT 1"
+)
+
+
+def _previous_at_risk_ids(connection) -> set[str]:
+    rows = connection.execute(
+        _sql(f"SELECT student_id FROM alerts WHERE run_id = ({_LAST_COMPLETED_RUN})")
     )
-    return set(df[_ID_COLUMN].astype(str))
+    return {str(row[0]) for row in rows}
+
+
+def previous_at_risk_ids_db() -> set[str]:
+    with _get_engine().connect() as connection:
+        return _previous_at_risk_ids(connection)
 
 
 def previous_at_risk_ids(alerts_path=DAILY_ALERTS_PATH, *, source: str | None = None) -> set[str]:
@@ -334,21 +346,77 @@ def append_to_alert_log_csv(at_risk: pd.DataFrame, alerts_path=DAILY_ALERTS_PATH
     logger.info("daily run: %d at-risk students appended to %s", len(rows), alerts_path)
 
 
-def append_to_alert_log_db(at_risk: pd.DataFrame, *, run_at=None) -> None:
-    """Append this run's at-risk students to the `alerts` table.
+# --- Runs (B-04) --------------------------------------------------------------
+# A run is a `runs` row, written even when nobody is at risk and when the run
+# fails, so "ran, nobody at risk" and "has not run for three days" are different
+# facts. Only the database backend has one; see db/schema.sql.
+class RunAlreadyRecordedError(RuntimeError):
+    """A completed run already exists for this run_date - one per day."""
 
-    `run_at` is passed explicitly rather than left to the column default, so every
-    row of one run shares one timestamp - `previous_at_risk_ids_db()` groups runs
-    by that exact value.
-    """
-    run_at = run_at or datetime.now(timezone.utc)
-    if at_risk.empty:
-        logger.info("daily run: no at-risk students, nothing written to alerts")
-        return
+
+# Any fixed number works; it only has to be the same in every pipeline process,
+# and differ from scripts/init_db.py's ADVISORY_LOCK_KEY.
+_RUN_LOCK_KEY = 461_600_04
+
+
+def run_date_of(started_at: datetime) -> date:
+    """The day a run belongs to: its start, in the zone the schedule is written in."""
+    return started_at.astimezone(ZoneInfo(SCHEDULER_TIMEZONE)).date()
+
+
+def mark_new_or_repeat(at_risk: pd.DataFrame, previous: set[str]) -> pd.DataFrame:
+    """Add a `status` column: 'new' or 'still_at_risk' vs. the previous run's ids."""
+    at_risk = at_risk.copy()
+    at_risk["status"] = [
+        "still_at_risk" if str(student_id) in previous else "new"
+        for student_id in at_risk[_ID_COLUMN]
+    ]
+    return at_risk
+
+
+def _write_run(
+    connection,
+    marked: pd.DataFrame,
+    *,
+    started_at: datetime,
+    model_version: str | None = None,
+    threshold: float | None = None,
+    entity_count: int | None = None,
+) -> int:
+    """Insert one `runs` row and its alerts inside the caller's transaction."""
+    from sqlalchemy.exc import IntegrityError
+
+    run_date = run_date_of(started_at)
+    try:
+        run_id = connection.execute(
+            _sql(
+                "INSERT INTO runs (run_date, started_at, model_version, threshold, "
+                "entity_count, at_risk_count, status) "
+                "VALUES (:run_date, :started_at, :model_version, :threshold, "
+                ":entity_count, :at_risk_count, :status) RETURNING run_id"
+            ),
+            {
+                "run_date": run_date,
+                "started_at": started_at,
+                "model_version": model_version,
+                "threshold": threshold,
+                "entity_count": entity_count,
+                "at_risk_count": len(marked),
+                "status": "ok" if len(marked) else "no_alerts",
+            },
+        ).scalar_one()
+    except IntegrityError as e:
+        if "runs_run_date_uidx" not in str(e.orig):
+            raise
+        raise RunAlreadyRecordedError(
+            f"a run for {run_date} is already recorded - one run per day"
+        ) from None
 
     records = [
         {
-            "run_at": run_at,
+            "run_id": run_id,
+            # Every row of one run shares the run's start, not one now() per row.
+            "run_at": started_at,
             "student_id": str(row[_ID_COLUMN]),
             "churn_probability": float(row["churn_probability"]),
             "status": row["status"],
@@ -356,21 +424,152 @@ def append_to_alert_log_db(at_risk: pd.DataFrame, *, run_at=None) -> None:
             # jsonb columns take a JSON string; psycopg2 cannot adapt a list of dicts.
             "top_reasons_detail": json.dumps(row.get("top_reasons_detail") or []),
         }
-        for _, row in at_risk.iterrows()
+        for _, row in marked.iterrows()
     ]
-
-    engine = _get_engine()
-    with engine.begin() as connection:
+    if records:
         connection.execute(
             _sql(
-                "INSERT INTO alerts "
-                "(run_at, student_id, churn_probability, status, top_reasons, top_reasons_detail) "
-                "VALUES (:run_at, :student_id, :churn_probability, :status, :top_reasons, "
-                ":top_reasons_detail)"
+                "INSERT INTO alerts (run_id, run_at, student_id, churn_probability, "
+                "status, top_reasons, top_reasons_detail) "
+                "VALUES (:run_id, :run_at, :student_id, :churn_probability, :status, "
+                ":top_reasons, :top_reasons_detail)"
             ),
             records,
         )
-    logger.info("daily run: %d at-risk students inserted into alerts", len(records))
+    return run_id
+
+
+def record_run_db(
+    at_risk: pd.DataFrame,
+    *,
+    started_at: datetime,
+    model_version: str | None = None,
+    threshold: float | None = None,
+    entity_count: int | None = None,
+) -> pd.DataFrame:
+    """Mark `at_risk` against the previous run and record this run. Returns the marked frame.
+
+    One transaction under an advisory lock, so reading the previous run and writing
+    this one cannot interleave with another run: a concurrent run waits, then marks
+    against this one - or, on the same run_date, is refused with
+    `RunAlreadyRecordedError` by `runs_run_date_uidx`.
+    """
+    with _get_engine().begin() as connection:
+        connection.execute(_sql(f"SELECT pg_advisory_xact_lock({_RUN_LOCK_KEY})"))
+        marked = mark_new_or_repeat(at_risk, _previous_at_risk_ids(connection))
+        run_id = _write_run(
+            connection,
+            marked,
+            started_at=started_at,
+            model_version=model_version,
+            threshold=threshold,
+            entity_count=entity_count,
+        )
+    logger.info("daily run %s: %d at-risk students recorded", run_id, len(marked))
+    return marked
+
+
+def append_to_alert_log_db(at_risk: pd.DataFrame, *, run_at=None) -> None:
+    """Record an already-marked frame as one run started at `run_at` (default: now).
+
+    For callers that set `status` themselves (scripts/seed_demo_history.py). The
+    daily run uses `record_run_db`, which marks under the lock it writes under.
+    """
+    run_at = run_at or datetime.now(timezone.utc)
+    with _get_engine().begin() as connection:
+        connection.execute(_sql(f"SELECT pg_advisory_xact_lock({_RUN_LOCK_KEY})"))
+        _write_run(connection, at_risk, started_at=run_at)
+    logger.info("daily run: %d at-risk students inserted into alerts", len(at_risk))
+
+
+def record_failed_run_db(
+    *, started_at: datetime, model_version: str | None = None, threshold: float | None = None
+) -> None:
+    """Write a `failed` runs row: a broken day is a row, not a gap."""
+    with _get_engine().begin() as connection:
+        connection.execute(
+            _sql(
+                "INSERT INTO runs (run_date, started_at, model_version, threshold, status) "
+                "VALUES (:run_date, :started_at, :model_version, :threshold, 'failed')"
+            ),
+            {
+                "run_date": run_date_of(started_at),
+                "started_at": started_at,
+                "model_version": model_version,
+                "threshold": threshold,
+            },
+        )
+
+
+def latest_run_db() -> dict | None:
+    """The most recent run of any outcome, `failed` included, or None if there is none."""
+    with _get_engine().connect() as connection:
+        row = connection.execute(
+            _sql(
+                "SELECT run_id, run_date, started_at, finished_at, status, at_risk_count "
+                "FROM runs WHERE status <> 'superseded' "
+                "ORDER BY started_at DESC, run_id DESC LIMIT 1"
+            )
+        ).mappings().first()
+    return dict(row) if row else None
+
+
+def latest_run_csv(alerts_path=DAILY_ALERTS_PATH) -> dict | None:
+    """The CSV log only holds runs that flagged someone, so this is the newest of those."""
+    latest = latest_run_alerts_csv(alerts_path)
+    if latest.empty:
+        return None
+    started_at = pd.to_datetime(latest["run_at"], format="mixed", utc=True).max()
+    return {"started_at": started_at.to_pydatetime(), "status": "ok"}
+
+
+def latest_run(alerts_path=DAILY_ALERTS_PATH, *, source: str | None = None) -> dict | None:
+    """{started_at, status, ...} of the most recent run, or None if nothing ever ran."""
+    if _resolve(source) == "db":
+        return latest_run_db()
+    return latest_run_csv(alerts_path)
+
+
+def record_run(
+    at_risk: pd.DataFrame,
+    alerts_path=DAILY_ALERTS_PATH,
+    *,
+    started_at: datetime,
+    model_version: str | None = None,
+    threshold: float | None = None,
+    entity_count: int | None = None,
+    source: str | None = None,
+) -> pd.DataFrame:
+    """Mark `at_risk` new / still_at_risk and record the run. Returns the marked frame.
+
+    The CSV backend has no `runs`: it appends the alert rows only, so there a run
+    with nobody at risk still leaves no trace.
+    """
+    if _resolve(source) == "db":
+        return record_run_db(
+            at_risk,
+            started_at=started_at,
+            model_version=model_version,
+            threshold=threshold,
+            entity_count=entity_count,
+        )
+    marked = mark_new_or_repeat(at_risk, previous_at_risk_ids_csv(alerts_path))
+    append_to_alert_log_csv(marked, alerts_path, run_at=started_at)
+    return marked
+
+
+def record_failed_run(
+    *,
+    started_at: datetime,
+    model_version: str | None = None,
+    threshold: float | None = None,
+    source: str | None = None,
+) -> None:
+    """DB only; a no-op on the CSV backend, which has nowhere to put it."""
+    if _resolve(source) == "db":
+        record_failed_run_db(
+            started_at=started_at, model_version=model_version, threshold=threshold
+        )
 
 
 def append_to_alert_log(
@@ -395,11 +594,12 @@ def latest_run_alerts_csv(alerts_path=DAILY_ALERTS_PATH) -> pd.DataFrame:
 
 
 def latest_run_alerts_db() -> pd.DataFrame:
+    """Empty when the last completed run was `no_alerts` - never an older run's list."""
     return pd.read_sql(
         _sql(
             "SELECT run_at, student_id, churn_probability, status, top_reasons, "
             "top_reasons_detail FROM alerts "
-            "WHERE run_at = (SELECT max(run_at) FROM alerts) "
+            f"WHERE run_id = ({_LAST_COMPLETED_RUN}) "
             "ORDER BY churn_probability DESC"
         ),
         _get_engine(),
@@ -439,8 +639,8 @@ def previous_run_probabilities_db() -> dict[str, float]:
     df = pd.read_sql(
         _sql(
             "SELECT student_id, churn_probability FROM alerts "
-            "WHERE run_at = (SELECT max(run_at) FROM alerts "
-            "                WHERE run_at < (SELECT max(run_at) FROM alerts))"
+            "WHERE run_id = (SELECT run_id FROM runs WHERE status IN ('ok', 'no_alerts') "
+            "                ORDER BY started_at DESC, run_id DESC OFFSET 1 LIMIT 1)"
         ),
         _get_engine(),
     )
