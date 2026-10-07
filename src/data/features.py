@@ -43,6 +43,9 @@ from config import (
     CONTACT_LAG_DAYS,
     FEATURES,
     PLAN_MONTHS,
+    TREND_COLUMNS,
+    TREND_FEATURES,
+    TREND_TOLERANCE_DAYS,
 )
 
 logger = logging.getLogger(__name__)
@@ -163,7 +166,9 @@ DERIVED_COLUMNS = {"monthly_value_try": ["monthly_fee_try", "plan_type"]}
 RAW_FEATURE_COLUMNS = [
     column
     for column in FEATURES
-    if column not in MISSING_FLAG_COLUMNS.values() and column not in DERIVED_COLUMNS
+    if column not in MISSING_FLAG_COLUMNS.values() 
+    and column not in DERIVED_COLUMNS 
+    and column not in TREND_COLUMNS
 ]
 RAW_FEATURE_COLUMNS += [
     source
@@ -250,6 +255,39 @@ def drop_unimputable_rows(df: pd.DataFrame) -> pd.DataFrame:
     # ['plan_type']" okunur, KeyError okunmaz.
     mevcut = [c for c in UNIMPUTABLE_REQUIRED if c in df.columns]
     return df.dropna(subset=mevcut).reset_index(drop=True)
+
+
+def add_trend_features(current: pd.DataFrame, history: pd.DataFrame, as_of,
+                       trend_cfg: dict = TREND_FEATURES) -> pd.DataFrame:
+    """Add lag-delta features from historical snapshots.
+
+    For each (col, n) in trend_cfg, computes:
+      `<col>_delta_<n>d`         = current[col] − value of col ~n days before as_of
+      `<col>_delta_<n>d_missing` = 1 if no usable history was found, else 0
+
+    History lookup tolerates TREND_TOLERANCE_DAYS around the exact lag date
+    (uses the latest snapshot in [target − tolerance, target]). Students with
+    no matching history get NaN for the delta and missing=1.
+    """
+    out = current.copy()
+    as_of = pd.Timestamp(as_of)
+    ids = out["student_id"].astype(str)
+    for col, windows in trend_cfg.items():
+        for n in windows:
+            prev = pd.Series(float("nan"), index=out.index)
+            if not history.empty and col in history.columns:
+                target = as_of - pd.Timedelta(days=n)
+                window = history[
+                    (history["as_of_date"] <= target)
+                    & (history["as_of_date"] >= target - pd.Timedelta(days=TREND_TOLERANCE_DAYS))
+                ]
+                past = (window.sort_values("as_of_date")
+                        .drop_duplicates("student_id", keep="last")
+                        .set_index("student_id")[col])
+                prev = ids.map(past)
+            out[f"{col}_delta_{n}d"] = out[col] - prev
+            out[f"{col}_delta_{n}d_missing"] = prev.isna().astype(int)
+    return out
 
 
 def add_missing_flags(df: pd.DataFrame) -> pd.DataFrame:

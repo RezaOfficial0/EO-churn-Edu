@@ -18,7 +18,7 @@ The dispatchers are the only functions the pipeline and the API should call.
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -130,7 +130,8 @@ def load_daily_students_db() -> pd.DataFrame:
     path returns, so everything downstream is backend-agnostic.
     """
     df = pd.read_sql(
-        _sql("SELECT student_id, enrollment_date, features FROM daily_students"),
+        _sql("SELECT student_id, enrollment_date, features FROM daily_students "
+            "WHERE as_of_date = (SELECT max(as_of_date) FROM daily_students)"), # Scoring uses the latest as_of_date
         _get_engine(),
     )
     if df.empty:
@@ -157,7 +158,7 @@ def _coerce_types(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.copy()
     for column in df.columns:
-        if column in CAT_COLS or column in STUDENT_INFO:
+        if column in CAT_COLS or column in STUDENT_INFO or column == "as_of_date":
             continue
         df[column] = pd.to_numeric(df[column], errors="coerce")
     if "enrollment_date" in df.columns:
@@ -172,21 +173,57 @@ def load_daily_students(path=DAILY_DATA_PATH, *, source: str | None = None) -> p
     return load_daily_students_csv(path)
 
 
+def history_available(source: str | None = None) -> bool:
+    """True when the active backend keeps snapshot history (DB only)."""
+    return _resolve(source) == "db"
+
+
+def load_student_history_db(as_of: date, days: int) -> pd.DataFrame:
+    """
+    Snapshots in [as_of - days, as_of], flat like load_daily_students_db plus as_of_date.
+    Returns a flat DataFrame (one row per student per as_of_date) with
+    student_id, as_of_date, and every feature column expanded from the
+    JSONB `features` field — the same shape as load_daily_students_db,
+    plus the as_of_date column so callers can distinguish snapshots.
+    """
+    df = pd.read_sql(
+        _sql(
+            "SELECT student_id, as_of_date, features FROM daily_students "
+            "WHERE as_of_date BETWEEN :start AND :end"
+        ),
+        _get_engine(),
+        params={"start": as_of - timedelta(days=days), "end": as_of},
+    )
+    if df.empty:
+        return df.drop(columns=["features"])
+    features = df["features"].apply(lambda v: json.loads(v) if isinstance(v, str) else v)
+    flat = pd.concat(
+        [df[["student_id", "as_of_date"]].reset_index(drop=True),
+         pd.json_normalize(features).reset_index(drop=True)],
+        axis=1,
+    )
+    flat = _coerce_types(flat)
+    flat["as_of_date"] = pd.to_datetime(flat["as_of_date"])
+    return flat
+
+
 # --- Daily serving data: writing (DB only) ----------------------------------
 # There is no `_csv` counterpart on purpose. Writing the CSV means editing the file
 # the client hands you, which is their job, not the pipeline's; the database is the
 # only backend this system actually loads data INTO.
-def upsert_daily_students_db(df: pd.DataFrame) -> int:
-    """Insert or update today's students in `daily_students`. Returns rows written.
+def upsert_daily_students_db(df: pd.DataFrame, as_of_date: date | None = None) -> int:
+    """Insert or update one snapshot of students in `daily_students`. Returns rows written.
 
-    Existing students are updated in place (matched on `student_id`), so this is
-    safe to re-run: loading the same file twice leaves the table identical, not
-    doubled. Students present in the table but absent from `df` are left alone -
-    `alerts` references them, so removing one would break its history.
+    Each load is stored under `as_of_date` (default: today), so earlier snapshots
+    are kept as history. A row is matched on `(student_id, as_of_date)`: loading
+    the same file for the same date twice updates in place and leaves the table
+    identical, not doubled, while a different date adds new rows. Students present
+    in the table but absent from `df` are left alone, and so are all other dates.
 
     Every column except `config.STUDENT_INFO` is packed into the `features` JSONB
     blob, which is exactly what `load_daily_students_db()` unpacks on the way out.
     """
+    as_of_date = as_of_date or date.today()
     if df.empty:
         logger.info("daily_students: nothing to write")
         return 0
@@ -203,15 +240,16 @@ def upsert_daily_students_db(df: pd.DataFrame) -> int:
                 # than become the literal `NaN`, which is not valid JSON and which
                 # Postgres would reject (or worse, store as a string).
                 "features": json.dumps(features, allow_nan=False),
+                "as_of_date": as_of_date,
             }
         )
 
     with _get_engine().begin() as connection:
         connection.execute(
             _sql(
-                "INSERT INTO daily_students (student_id, enrollment_date, features) "
-                "VALUES (:student_id, :enrollment_date, :features) "
-                "ON CONFLICT (student_id) DO UPDATE SET "
+                "INSERT INTO daily_students (student_id, as_of_date, enrollment_date, features) "
+                "VALUES (:student_id, :as_of_date, :enrollment_date, :features) "
+                "ON CONFLICT (student_id, as_of_date) DO UPDATE SET "
                 "  enrollment_date = EXCLUDED.enrollment_date, "
                 "  features        = EXCLUDED.features, "
                 "  updated_at      = now()"
@@ -222,11 +260,21 @@ def upsert_daily_students_db(df: pd.DataFrame) -> int:
     return len(records)
 
 
-def count_daily_students_db() -> int:
-    """How many students the table currently holds."""
+def count_daily_students_db(as_of_date: date | None = None) -> int:
+    """Rows in the `as_of_date` snapshot, or distinct students across all snapshots when omitted."""
+    if as_of_date is None:
+        query, params = "SELECT count(DISTINCT student_id) FROM daily_students", {}
+    else:
+        query = "SELECT count(*) FROM daily_students WHERE as_of_date = :as_of_date"
+        params = {"as_of_date": as_of_date}
     with _get_engine().connect() as connection:
-        return int(connection.execute(_sql("SELECT count(*) FROM daily_students")).scalar())
+        return int(connection.execute(_sql(query), params).scalar())
 
+
+def latest_as_of_date_db() -> date | None:
+    """The most recent snapshot date in `daily_students` (None when the table is empty)."""
+    with _get_engine().connect() as connection:
+        return connection.execute(_sql("SELECT max(as_of_date) FROM daily_students")).scalar()
 
 # --- Alert-log reads (dual-mode) --------------------------------------------
 # "Was this student already at risk in the PREVIOUS run?" - which is what decides

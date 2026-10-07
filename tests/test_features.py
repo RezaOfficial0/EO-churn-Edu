@@ -17,6 +17,8 @@ from config import (
     STUDENT_INFO,
     TARGET_FEATURE,
     TRAIN_DATA_PATH,
+    TREND_COLUMNS,
+    TREND_TOLERANCE_DAYS,
 )
 from src.data.features import (
     DERIVED_COLUMNS,
@@ -33,6 +35,7 @@ from src.data.features import (
     drop_audited_out_columns,
     drop_unimputable_rows,
     fit_imputation,
+    add_trend_features,
 )
 from src.data.validation import quarantine_unusable_rows
 
@@ -437,3 +440,89 @@ def test_a_lag_without_a_window_start_column_raises_rather_than_faking_one(monke
     assert "days_since_last_contact_at_window_start" in message
     # and it did not quietly shift the scoring-time value by the lag instead
     assert frame["days_since_last_contact"].tolist() == [2]
+
+
+# --- trend features -----------------------------------------------------------
+_AS_OF = "2026-09-08"
+_TREND_CFG = {"program_adherence_rate": [7, 28]}
+
+
+def _trend_inputs():
+    current = pd.DataFrame(
+        {"student_id": ["A", "B", "C"], "program_adherence_rate": [0.60, 0.40, 0.90]}
+    )
+    history = pd.DataFrame(
+        {
+            "student_id": ["A", "A", "B"],
+            "as_of_date": pd.to_datetime(["2026-09-01", "2026-08-11", "2026-09-01"]),
+            "program_adherence_rate": [0.50, 0.80, 0.40],
+        }
+    )
+    return current, history
+
+
+def test_trend_delta_is_today_minus_the_value_n_days_ago():
+    current, history = _trend_inputs()
+    out = add_trend_features(current, history, _AS_OF, _TREND_CFG).set_index("student_id")
+
+    assert out.loc["A", "program_adherence_rate_delta_7d"] == pytest.approx(0.10)
+    assert out.loc["A", "program_adherence_rate_delta_28d"] == pytest.approx(-0.20)
+    assert out.loc["B", "program_adherence_rate_delta_7d"] == pytest.approx(0.0)
+
+
+def test_missing_history_is_null_plus_a_missing_flag():
+    current, history = _trend_inputs()
+    out = add_trend_features(current, history, _AS_OF, _TREND_CFG).set_index("student_id")
+
+    # B has no snapshot 28 days ago; C has no history at all.
+    for student in ("B", "C"):
+        assert math.isnan(out.loc[student, "program_adherence_rate_delta_28d"])
+        assert out.loc[student, "program_adherence_rate_delta_28d_missing"] == 1
+    assert out.loc["C", "program_adherence_rate_delta_7d_missing"] == 1
+    assert out.loc["A", "program_adherence_rate_delta_7d_missing"] == 0
+
+
+def test_no_history_at_all_gives_all_missing_without_raising():
+    current, _ = _trend_inputs()
+    out = add_trend_features(current, pd.DataFrame(), _AS_OF, _TREND_CFG)
+
+    assert out["program_adherence_rate_delta_7d"].isna().all()
+    assert (out["program_adherence_rate_delta_7d_missing"] == 1).all()
+
+
+def test_an_empty_trend_config_changes_nothing():
+    current, history = _trend_inputs()
+    pd.testing.assert_frame_equal(add_trend_features(current, history, _AS_OF, {}), current)
+
+
+def test_the_lookup_takes_the_latest_snapshot_inside_the_tolerance_window():
+    target = pd.Timestamp(_AS_OF) - pd.Timedelta(days=7)
+    history = pd.DataFrame(
+        {
+            "student_id": ["A", "A", "A"],
+            "as_of_date": [
+                target - pd.Timedelta(days=TREND_TOLERANCE_DAYS + 1),  # too old: ignored
+                target - pd.Timedelta(days=TREND_TOLERANCE_DAYS),      # oldest allowed
+                target - pd.Timedelta(days=1),                         # latest allowed: wins
+            ],
+            "program_adherence_rate": [0.10, 0.20, 0.30],
+        }
+    )
+    current = pd.DataFrame({"student_id": ["A"], "program_adherence_rate": [0.50]})
+
+    out = add_trend_features(current, history, _AS_OF, {"program_adherence_rate": [7]})
+
+    assert out.loc[0, "program_adherence_rate_delta_7d"] == pytest.approx(0.20)
+
+
+def test_trend_does_not_touch_the_callers_frame():
+    current, history = _trend_inputs()
+    before = current.copy()
+    add_trend_features(current, history, _AS_OF, _TREND_CFG)
+    pd.testing.assert_frame_equal(current, before)
+
+
+def test_trend_columns_are_model_features_but_not_raw_columns():
+    """They are computed here from history, so a raw export must not be asked for them."""
+    assert all(column in FEATURES for column in TREND_COLUMNS)
+    assert not set(TREND_COLUMNS) & set(RAW_FEATURE_COLUMNS)

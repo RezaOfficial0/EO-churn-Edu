@@ -39,14 +39,25 @@ from config import (
     RUN_QUALITY_PATH,
     SHAP_TOP_N_FEATURES,
     STUDENT_INFO,
+    TREND_COLUMNS,
+    TREND_FEATURES,
+    TREND_TOLERANCE_DAYS,
 )
 from src.data.features import (
     RAW_FEATURE_COLUMNS,
     SERVING_REQUIRED_COLUMNS,
     build_serving_frame,
     drop_audited_out_columns,
+    add_trend_features,
 )
-from src.data.loader import append_to_alert_log, load_daily_students, previous_at_risk_ids
+from src.data.loader import (
+    append_to_alert_log,
+    latest_as_of_date_db,
+    load_daily_students,
+    load_student_history_db,
+    previous_at_risk_ids,
+    history_available,
+)
 from src.data.preprocess import daily_process
 from src.data.run_quality import write_report
 from src.data.validation import (
@@ -68,6 +79,23 @@ logger = logging.getLogger(__name__)
 
 _ID_COLUMN = STUDENT_INFO[0]
 
+def _with_trend_features(usable: pd.DataFrame) -> pd.DataFrame:
+    """Add the config-driven trend columns. A no-op while config.TREND_FEATURES is empty."""
+    if not TREND_FEATURES:
+        return usable
+    if not history_available():
+        # The CSV backend keeps no history, so every trend would be null and the
+        # model would silently score on inputs it cannot use. Refuse instead.
+        raise RuntimeError(
+            "config.TREND_FEATURES is set but DATA_SOURCE is not 'db': the CSV backend "
+            "keeps no history. Use DATA_SOURCE=db or empty TREND_FEATURES."
+        )
+    as_of = latest_as_of_date_db()
+    if as_of is None:
+        raise RuntimeError("daily_students is empty: there is no snapshot to compute trends for")
+    longest = max(w for windows in TREND_FEATURES.values() for w in windows)
+    history = load_student_history_db(as_of, longest + TREND_TOLERANCE_DAYS)
+    return add_trend_features(usable, history, as_of, TREND_FEATURES)
 
 class ScoringResult(NamedTuple):
     """What one scoring pass produced.
@@ -124,11 +152,14 @@ def score_students(
     usable, rejected = quarantine_unusable_rows(raw, SERVING_REQUIRED_COLUMNS)
     quarantine = check_quarantine(len(raw), rejected)
 
+    # Trend features are added here, after the row gate but before the model sees them.
+    usable = _with_trend_features(usable)
+
     engineered = build_serving_frame(usable, imputation_values)
     # Unchanged, and now a bug detector rather than a data gate: every row-level null
     # the recipe does not fill was removed above, so if this still fires the recipe
     # and SERVING_REQUIRED_COLUMNS have drifted apart.
-    require_no_nulls(engineered, FEATURES)
+    require_no_nulls(engineered, [c for c in FEATURES if c not in TREND_COLUMNS])
 
     customer_info, X = daily_process(engineered)
     at_risk = predict(model, X, customer_info, threshold=threshold, calibrator=calibrator)

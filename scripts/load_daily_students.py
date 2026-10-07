@@ -5,19 +5,23 @@ read rows someone inserted by hand.
 
     python scripts/load_daily_students.py                    # loads data/daily_data.csv
     python scripts/load_daily_students.py path/to/other.csv
+    python scripts/load_daily_students.py --as-of 2026-09-27   # snapshot date, default today
 
 It needs `DATABASE_URL` and nothing else - `DATA_SOURCE` is irrelevant here, since
 loading into Postgres is the point whether or not the pipeline is currently reading
 from it. Run it before flipping `DATA_SOURCE` to "db", not after.
 
-Re-running is safe: students are matched on `student_id` and updated in place, so
-loading the same file twice leaves the table identical rather than doubled.
+Each load is one snapshot, stored under its `--as-of` date (default: today) so
+history accumulates. Re-running is safe: rows are matched on
+`(student_id, as_of_date)` and updated in place, so loading the same file for the
+same date twice leaves the table identical rather than doubled.
 
 The CSV is validated first (same gate the daily pipeline uses), so a file with a
 missing column, a stray extra column or a duplicate `student_id` is rejected before
 anything is written.
 """
 import argparse
+from datetime import date
 import sys
 from pathlib import Path
 
@@ -32,13 +36,24 @@ from src.logging_setup import configure_logging
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+
     parser.add_argument(
         "csv",
         nargs="?",
         default=DAILY_DATA_PATH,
         help=f"CSV to load (default: {DAILY_DATA_PATH})",
     )
+
+    parser.add_argument(
+        "--as-of",
+        type=date.fromisoformat,
+        default=None,
+        help="snapshot date, YYYY-MM-DD (default: today)",
+    )
+
     args = parser.parse_args()
+
+    as_of = args.as_of or date.today()
 
     configure_logging()
 
@@ -58,17 +73,17 @@ def main() -> int:
         return 1
 
     try:
-        before = count_daily_students_db()
-        written = upsert_daily_students_db(raw)
-        after = count_daily_students_db()
+        before = count_daily_students_db(as_of)
+        written = upsert_daily_students_db(raw, as_of_date=as_of)
+        after = count_daily_students_db(as_of)
     except RuntimeError as e:  # DATABASE_URL not set
         print(f"error: {e}", file=sys.stderr)
         return 1
 
     print(
-        f"{written} row(s) from {args.csv} written to daily_students "
+        f"{written} row(s) from {args.csv} written to daily_students for {as_of} "
         f"({after - before} new, {written - (after - before)} updated); "
-        f"{after} student(s) in the table."
+        f"{count_daily_students_db()} student(s) in the table overall."
     )
     return 0
 
