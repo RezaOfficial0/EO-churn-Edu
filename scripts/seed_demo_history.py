@@ -45,7 +45,7 @@ from config import (  # noqa: E402
     STUDENT_INFO,
 )
 from pipeline.daily_pipeline import score_students  # noqa: E402
-from src.data.loader import append_to_alert_log, latest_run_alerts  # noqa: E402
+from src.data.loader import append_to_alert_log, latest_run  # noqa: E402
 from src.explainer.shap_explainer import create_explainer  # noqa: E402
 from src.logging_setup import configure_logging  # noqa: E402
 from src.model.calibrate import load_calibrator  # noqa: E402
@@ -112,8 +112,9 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     configure_logging()
 
-    existing = latest_run_alerts(DAILY_ALERTS_PATH)
-    if not existing.empty and not args.force:
+    # Any recorded run, a `no_alerts` one included - its table is not "freshly reset".
+    existing = latest_run(DAILY_ALERTS_PATH)
+    if existing is not None and not args.force:
         print(
             "error: the alert log already has runs. This script fabricates history and\n"
             "is meant for a freshly reset demo only (scripts/demo_reset.sh does that).\n"

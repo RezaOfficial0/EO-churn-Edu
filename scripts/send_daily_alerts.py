@@ -17,11 +17,15 @@ message details the students flagged for the FIRST time in that run (`status`
 = "new") and summarises the ones that were already flagged, so a daily message
 stays actionable instead of repeating the same names every morning.
 
-Two refusals, both deliberate. If the alert log has no runs at all, or its most
-recent run is older than --max-age-hours, nothing is sent and the exit code is 1.
-"Bugün risk altında öğrenci yok" and "the pipeline never ran" are very different
-facts, and a scheduler that fails silently at 09:00 must not send a reassuring
-message built from stale data. Use --force to send anyway.
+Three refusals, all deliberate. If no run was ever recorded, if the most recent
+run failed, or if it is older than --max-age-hours, nothing is sent and the exit
+code is 1. "Bugün risk altında öğrenci yok" and "the pipeline never ran" are very
+different facts, and a scheduler that fails silently at 09:00 must not send a
+reassuring message built from stale data. Use --force to send anyway.
+
+With the database backend a run that flagged nobody is a `no_alerts` run, so it is
+reported as good news. The CSV log only holds runs that flagged someone, so there
+such a day still looks like "no run" (or an older run) and needs --force.
 """
 import argparse
 import sys
@@ -35,6 +39,7 @@ import pandas as pd
 from config import NOTIFY_CHANNELS, RUN_QUALITY_PATH, STUDENT_INFO
 from src.data.features import add_monthly_value
 from src.data.loader import (
+    latest_run,
     latest_run_alerts,
     load_daily_students,
     previous_run_probabilities,
@@ -59,17 +64,17 @@ def split_latest_run() -> tuple[pd.DataFrame, pd.DataFrame]:
     )
 
 
-def run_age(alerts: pd.DataFrame) -> timedelta | None:
-    """How long ago the run in `alerts` happened, or None if it cannot be told."""
-    if alerts.empty or "run_at" not in alerts.columns:
+def run_age(run: dict | None) -> timedelta | None:
+    """How long ago `run` started, or None if it cannot be told."""
+    if not run or run.get("started_at") is None:
         return None
     try:
-        run_at = pd.to_datetime(alerts["run_at"], format="mixed", utc=True).max()
+        started_at = pd.to_datetime(run["started_at"], utc=True)
     except Exception:  # noqa: BLE001 - an unparseable timestamp is not worth failing over
         return None
-    if pd.isna(run_at):
+    if pd.isna(started_at):
         return None
-    return datetime.now(timezone.utc) - run_at.to_pydatetime()
+    return datetime.now(timezone.utc) - started_at.to_pydatetime()
 
 
 def todays_students() -> pd.DataFrame | None:
@@ -125,6 +130,7 @@ def main() -> int:
     configure_logging()
 
     try:
+        run = latest_run()
         new_alerts, still_at_risk = split_latest_run()
     except Exception as e:  # noqa: BLE001 - the cause is reported, not the stack
         # A dead database is an operational fact, not a bug: a 40-line SQLAlchemy
@@ -142,8 +148,8 @@ def main() -> int:
 
     # Guard 1: no run at all. Without this, an empty alert log produces a cheerful
     # "no students at risk today" - which is exactly the wrong message when the
-    # truth is that the pipeline never ran.
-    if new_alerts.empty and still_at_risk.empty and not args.force:
+    # truth is that the pipeline never ran. A `no_alerts` run is a run: it passes.
+    if run is None and not args.force:
         print(
             "error: alert log'da kayıtlı koşu yok, bildirim gönderilmedi.\n"
             "Önce günlük koşuyu çalıştır:  python -m pipeline.daily_pipeline\n"
@@ -152,9 +158,19 @@ def main() -> int:
         )
         return 1
 
-    # Guard 2: the last run is old. A scheduler that failed at 09:00 must not have
+    # Guard 2: the last run failed. The alerts above then belong to an older run.
+    if run is not None and run.get("status") == "failed" and not args.force:
+        print(
+            "error: son koşu başarısız olmuş, bildirim gönderilmedi.\n"
+            "Sebep pipeline log'unda:  python -m pipeline.daily_pipeline\n"
+            "(önceki koşuyu yine de göndermek istiyorsan: --force)",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Guard 3: the last run is old. A scheduler that failed at 09:00 must not have
     # yesterday's alerts re-sent as if they were today's.
-    age = run_age(pd.concat([new_alerts, still_at_risk]))
+    age = run_age(run)
     if age is not None and age > timedelta(hours=args.max_age_hours) and not args.force:
         hours = age.total_seconds() / 3600
         print(

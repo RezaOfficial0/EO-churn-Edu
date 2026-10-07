@@ -7,7 +7,9 @@ The run is split into two halves on purpose:
     `GET /students` calls only this, so a dashboard can refresh as often as it likes
     without touching the alert log.
   - `log_alerts()` is the **write** half: it marks each student `new` /
-    `still_at_risk` against the previous run and appends the run to the alert log.
+    `still_at_risk` against the previous run and records the run. With the database
+    backend every run is a `runs` row - nobody at risk (`no_alerts`) and `failed`
+    included - and there is at most one completed run per day (B-04).
 
 `run_daily_pipeline()` is score + log, which is what `POST /run-daily-pipeline`
 and the standalone entry point call:
@@ -51,12 +53,13 @@ from src.data.features import (
     add_trend_features,
 )
 from src.data.loader import (
-    append_to_alert_log,
+    RunAlreadyRecordedError,
     latest_as_of_date_db,
     load_daily_students,
     load_student_history_db,
-    previous_at_risk_ids,
     history_available,
+    record_failed_run,
+    record_run,
 )
 from src.data.preprocess import daily_process
 from src.data.run_quality import write_report
@@ -180,16 +183,30 @@ def score_students(
     return ScoringResult(at_risk=at_risk, rejected=rejected, quarantine=quarantine)
 
 
-def log_alerts(at_risk: pd.DataFrame, alerts_path=DAILY_ALERTS_PATH) -> pd.DataFrame:
-    """Mark each student `new` / `still_at_risk` and append the run to the alert log.
+def log_alerts(
+    at_risk: pd.DataFrame,
+    alerts_path=DAILY_ALERTS_PATH,
+    *,
+    started_at: datetime | None = None,
+    model_version: str | None = None,
+    threshold: float | None = None,
+    entity_count: int | None = None,
+) -> pd.DataFrame:
+    """Mark each student `new` / `still_at_risk` and record the run.
 
     Returns the frame with the `status` column added. This is the only write in the
-    daily flow - call it once per real run, never on a dashboard page load.
+    daily flow - call it once per real run, never on a dashboard page load. With the
+    database backend the run is recorded even when `at_risk` is empty, and a second
+    run on the same day raises `RunAlreadyRecordedError`.
     """
-    run_at = datetime.now(timezone.utc)
-    marked = _mark_new_or_repeat(at_risk, alerts_path)
-    append_to_alert_log(marked, alerts_path, run_at=run_at)
-    return marked
+    return record_run(
+        at_risk,
+        alerts_path,
+        started_at=started_at or datetime.now(timezone.utc),
+        model_version=model_version,
+        threshold=threshold,
+        entity_count=entity_count,
+    )
 
 
 def run_daily_pipeline(
@@ -203,23 +220,41 @@ def run_daily_pipeline(
     top_n=SHAP_TOP_N_FEATURES,
     alerts_path=DAILY_ALERTS_PATH,
     quality_path=RUN_QUALITY_PATH,
+    model_version: str | None = None,
 ) -> ScoringResult:
     """A full daily run: score, record it, and leave the quality summary behind.
 
     Returns the same `ScoringResult` as `score_students`, with `status` added to
     `at_risk`. The quality summary is written HERE and not in `score_students`,
     because that one is called on every dashboard page load and must stay pure.
+
+    A run that raises is recorded as `failed` (database backend) before the error
+    propagates - except a refused same-day re-run, which is not a failure of the day.
     """
-    result = score_students(
-        daily_data_path,
-        model=model,
-        explainer=explainer,
-        imputation_values=imputation_values,
-        threshold=threshold,
-        calibrator=calibrator,
-        top_n=top_n,
-    )
-    marked = log_alerts(result.at_risk, alerts_path)
+    started_at = datetime.now(timezone.utc)
+    try:
+        result = score_students(
+            daily_data_path,
+            model=model,
+            explainer=explainer,
+            imputation_values=imputation_values,
+            threshold=threshold,
+            calibrator=calibrator,
+            top_n=top_n,
+        )
+        marked = log_alerts(
+            result.at_risk,
+            alerts_path,
+            started_at=started_at,
+            model_version=model_version,
+            threshold=threshold,
+            entity_count=result.quarantine.total,
+        )
+    except RunAlreadyRecordedError:
+        raise
+    except Exception:
+        _record_failure(started_at, model_version, threshold)
+        raise
     # Counts only, for scripts/send_daily_alerts.py to put in the message. Written
     # even when nothing was skipped: a stale file from a worse run yesterday must not
     # be reported as today's.
@@ -227,15 +262,13 @@ def run_daily_pipeline(
     return result._replace(at_risk=marked)
 
 
-def _mark_new_or_repeat(at_risk: pd.DataFrame, alerts_path) -> pd.DataFrame:
-    """Add a `status` column: 'new' or 'still_at_risk' vs. the previous run."""
-    previous = previous_at_risk_ids(alerts_path)
-    at_risk = at_risk.copy()
-    at_risk["status"] = [
-        "still_at_risk" if str(student_id) in previous else "new"
-        for student_id in at_risk[_ID_COLUMN]
-    ]
-    return at_risk
+def _record_failure(started_at: datetime, model_version: str | None, threshold) -> None:
+    """Best effort: when the database itself is what failed, this cannot be written
+    either, and the original error is the one worth raising."""
+    try:
+        record_failed_run(started_at=started_at, model_version=model_version, threshold=threshold)
+    except Exception:  # noqa: BLE001
+        logger.exception("daily run failed and the failure could not be recorded")
 
 
 def main() -> None:
@@ -252,6 +285,7 @@ def main() -> None:
         calibrator=load_calibrator(CALIBRATOR_PATH),
         imputation_values=meta.get("imputation_values", {}),
         threshold=meta.get("chosen_threshold", 0.5),
+        model_version=meta.get("trained_at"),
     )
     quarantine = result.quarantine
     if quarantine.skipped:

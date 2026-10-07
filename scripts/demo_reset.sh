@@ -56,7 +56,7 @@ if ! docker compose "${COMPOSE[@]:2}" ps --status running --quiet 2>/dev/null | 
 fi
 
 echo "-> alert log temizleniyor"
-"${COMPOSE[@]}" exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'TRUNCATE alerts;'
+"${COMPOSE[@]}" exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'TRUNCATE alerts, runs;'
 
 echo "-> günlük veri yeniden yükleniyor"
 "${COMPOSE[@]}" run --rm --no-deps api python scripts/load_daily_students.py
