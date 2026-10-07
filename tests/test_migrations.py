@@ -130,12 +130,15 @@ def test_untracked_legacy_database_is_adopted(empty_db):
 
 
 def test_history_migration_keeps_rows_and_allows_new_snapshots(empty_db):
-    """003 on a database that already holds data: rows move to today's date, a second
-    snapshot of the same student fits, and alerts no longer need a snapshot row."""
+    """003 on a database that already holds data: rows keep the date they were loaded
+    (updated_at), a second snapshot of the same student fits, and alerts no longer
+    need a snapshot row."""
     before = [p for p in init_db.migration_files() if p.name < "003"]
     _migrate(empty_db, before)
     with empty_db.begin() as c:
-        c.exec_driver_sql("INSERT INTO daily_students VALUES ('S1', NULL, '{}', now())")
+        c.exec_driver_sql(
+            "INSERT INTO daily_students VALUES ('S1', NULL, '{}', now() - interval '21 days')"
+        )
         c.exec_driver_sql(
             "INSERT INTO alerts (student_id, churn_probability, status) VALUES ('S1', 0.6, 'new')"
         )
@@ -144,7 +147,8 @@ def test_history_migration_keeps_rows_and_allows_new_snapshots(empty_db):
 
     with empty_db.begin() as c:
         carried = c.exec_driver_sql(
-            "SELECT count(*) FROM daily_students WHERE as_of_date = CURRENT_DATE"
+            "SELECT as_of_date = updated_at::date AND as_of_date <= CURRENT_DATE - 20 "
+            "FROM daily_students WHERE student_id = 'S1'"
         ).scalar()
         c.exec_driver_sql(
             "INSERT INTO daily_students (student_id, as_of_date, features) "
@@ -155,9 +159,23 @@ def test_history_migration_keeps_rows_and_allows_new_snapshots(empty_db):
         )
         total = c.exec_driver_sql("SELECT count(*) FROM daily_students").scalar()
         kept = c.exec_driver_sql("SELECT count(*) FROM alerts").scalar()
-    assert carried == 1
+    assert carried is True
     assert total == 2
     assert kept == 2
+
+def test_a_database_built_from_schema_sql_can_be_adopted(empty_db):
+    """schema.sql applied directly gives an untracked database already in the current
+    shape; init_db must adopt it without 003 failing on what is already there."""
+    with empty_db.begin() as c:
+        c.exec_driver_sql(SCHEMA_SQL)
+        c.exec_driver_sql(
+            "INSERT INTO daily_students (student_id, as_of_date, features) "
+            "VALUES ('S1', CURRENT_DATE, '{}')"
+        )
+    _migrate(empty_db)
+    assert _migrate(empty_db) == []
+    with empty_db.connect() as c:
+        assert c.exec_driver_sql("SELECT count(*) FROM daily_students").scalar() == 1
 
 
 def test_failed_migration_rolls_back_and_records_nothing(empty_db, tmp_path):

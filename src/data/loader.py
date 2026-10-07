@@ -173,6 +173,10 @@ def load_daily_students(path=DAILY_DATA_PATH, *, source: str | None = None) -> p
     return load_daily_students_csv(path)
 
 
+def history_available(source: str | None = None) -> bool:
+    """True when the active backend keeps snapshot history (DB only)."""
+    return _resolve(source) == "db"
+
 
 def load_student_history_db(as_of: date, days: int) -> pd.DataFrame:
     """

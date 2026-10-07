@@ -1,9 +1,11 @@
 """The daily run must record every run and mark repeat students `still_at_risk`,
 even when two runs happen on the same day - and scoring alone must record nothing."""
 import pandas as pd
+import pytest
 
+from pipeline import daily_pipeline
 from config import CALIBRATOR_PATH, MODEL_META_PATH, MODEL_PATH
-from pipeline.daily_pipeline import log_alerts, run_daily_pipeline, score_students
+from pipeline.daily_pipeline import log_alerts, run_daily_pipeline, score_students, _with_trend_features
 from src.explainer.shap_explainer import create_explainer
 from src.model.calibrate import load_calibrator
 from src.model.load import load_meta, load_model
@@ -78,3 +80,10 @@ def test_score_students_matches_run_daily_pipeline(tmp_path):
 
     assert list(scored["student_id"]) == list(recorded["student_id"])
     pd.testing.assert_series_equal(scored["churn_probability"], recorded["churn_probability"])
+
+
+def test_trend_features_with_the_csv_backend_are_refused(monkeypatch):
+    """No history in CSV mode: a silent all-null trend is worse than a loud failure."""
+    monkeypatch.setattr(daily_pipeline, "TREND_FEATURES", {"program_adherence_rate": [7]})
+    with pytest.raises(RuntimeError, match="DATA_SOURCE"):
+        daily_pipeline._with_trend_features(pd.DataFrame({"student_id": ["A"]}))

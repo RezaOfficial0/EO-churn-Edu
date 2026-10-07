@@ -45,9 +45,11 @@ CREATE INDEX IF NOT EXISTS daily_students_as_of_idx ON daily_students (as_of_dat
 -- would silently round 0.648649 to 0.6486. It also reaches Python as a float rather
 -- than a Decimal, which is what the API and the dashboard expect.
 
--- IMPORTANT: student_id column is now no longer a foreign key to daily_students.student_id. 
--- In the daily_students table student_id is now part of a composite primary key (student_id, as_of_date) and the foreign key constraint has been dropped. 
--- This change was made to allow for multiple entries of the same student on different dates without violating the uniqueness constraint.
+-- NOTE: student_id is no longer a foreign key to daily_students. In daily_students
+-- student_id is now only half of the primary key (student_id, as_of_date), so the
+-- old single-column FK cannot exist. The database therefore no longer guarantees that
+-- an alert's student was ever scored. A composite FK (student_id, as_of_date) would
+-- need alerts.as_of_date and is tracked as a follow-up.
 CREATE TABLE IF NOT EXISTS alerts (
     id                 SERIAL PRIMARY KEY,
     student_id         TEXT        NOT NULL,

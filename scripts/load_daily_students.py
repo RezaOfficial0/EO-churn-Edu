@@ -36,12 +36,21 @@ from src.logging_setup import configure_logging
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+
     parser.add_argument(
         "csv",
         nargs="?",
         default=DAILY_DATA_PATH,
         help=f"CSV to load (default: {DAILY_DATA_PATH})",
     )
+
+    parser.add_argument(
+        "--as-of",
+        type=date.fromisoformat,
+        default=None,
+        help="snapshot date, YYYY-MM-DD (default: today)",
+    )
+
     args = parser.parse_args()
 
     as_of = args.as_of or date.today()

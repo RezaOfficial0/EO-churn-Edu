@@ -24,7 +24,7 @@ loudly when the share of skipped rows crosses `MAX_QUARANTINE_RATIO`, or when no
 survived - see `src.data.validation.check_quarantine`.
 """
 import logging
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from typing import NamedTuple
 
 import pandas as pd
@@ -39,7 +39,6 @@ from config import (
     RUN_QUALITY_PATH,
     SHAP_TOP_N_FEATURES,
     STUDENT_INFO,
-    DATA_SOURCE,
     TREND_COLUMNS,
     TREND_FEATURES,
     TREND_TOLERANCE_DAYS,
@@ -57,6 +56,7 @@ from src.data.loader import (
     load_daily_students,
     load_student_history_db,
     previous_at_risk_ids,
+    history_available,
 )
 from src.data.preprocess import daily_process
 from src.data.run_quality import write_report
@@ -83,13 +83,18 @@ def _with_trend_features(usable: pd.DataFrame) -> pd.DataFrame:
     """Add the config-driven trend columns. A no-op while config.TREND_FEATURES is empty."""
     if not TREND_FEATURES:
         return usable
-    if DATA_SOURCE.lower() != "db":
-        # CSV mode keeps no history: every trend is null with its _missing flag set.
-        history, as_of = pd.DataFrame(), date.today()
-    else:
-        as_of = latest_as_of_date_db()
-        longest = max(w for windows in TREND_FEATURES.values() for w in windows)
-        history = load_student_history_db(as_of, longest + TREND_TOLERANCE_DAYS)
+    if not history_available():
+        # The CSV backend keeps no history, so every trend would be null and the
+        # model would silently score on inputs it cannot use. Refuse instead.
+        raise RuntimeError(
+            "config.TREND_FEATURES is set but DATA_SOURCE is not 'db': the CSV backend "
+            "keeps no history. Use DATA_SOURCE=db or empty TREND_FEATURES."
+        )
+    as_of = latest_as_of_date_db()
+    if as_of is None:
+        raise RuntimeError("daily_students is empty: there is no snapshot to compute trends for")
+    longest = max(w for windows in TREND_FEATURES.values() for w in windows)
+    history = load_student_history_db(as_of, longest + TREND_TOLERANCE_DAYS)
     return add_trend_features(usable, history, as_of, TREND_FEATURES)
 
 class ScoringResult(NamedTuple):
