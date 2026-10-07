@@ -418,7 +418,7 @@ def predict_raw(payload: RawCustomerIn, request: Request):
     return to_external({"churn_probability": proba, "top_reasons": reasons})
 
 
-@app.get("/predict/{student_id}", dependencies=[Depends(require_api_key)])
+@app.get("/predict/{student_id}", dependencies=[Depends(require_api_key), Depends(get_model)])
 def predict_by_student_id(student_id: str, request: Request):
     try:
         daily = load_daily_students(DAILY_DATA_PATH)
