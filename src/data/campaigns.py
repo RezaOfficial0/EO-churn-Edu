@@ -90,14 +90,62 @@ def read_campaigns(campaigns_path: str | None = None) -> list[dict]:
     return records
 
 
+# Decisions share the campaign log rather than getting a file of their own: the
+# ordering question the pilot has to answer - what was drafted, then what did the
+# mentor do about it - is only answerable from one clock and one sequence.
+# Campaign lines written before this existed carry no marker, so an ABSENT
+# `record` key means "campaign"; only decisions are tagged.
+DECISION_RECORD = "decision"
+
+
+def append_decision(decision: dict, campaigns_path: str | None = None) -> dict:
+    """Append one mentor decision about a campaign and return the stored record."""
+    return append_campaign(
+        {**decision, "record": DECISION_RECORD}, campaigns_path
+    )
+
+
 def latest_campaign_by_student(campaigns_path: str | None = None) -> dict[str, dict]:
     """Newest campaign per student. Later lines win, because the file is a log."""
     latest: dict[str, dict] = {}
     for record in read_campaigns(campaigns_path):
+        if record.get("record") == DECISION_RECORD:
+            # A decision carries a student_id too. Without this it would shadow
+            # the campaign it is about, and the panel would render a decision as
+            # if it were the draft.
+            continue
         student_id = record.get("student_id")
         if isinstance(student_id, str) and student_id:
             latest[student_id] = record
     return latest
+
+
+def latest_decision_by_campaign(campaigns_path: str | None = None) -> dict[str, dict]:
+    """Newest decision per campaign. A mentor may change their mind; last wins."""
+    latest: dict[str, dict] = {}
+    for record in read_campaigns(campaigns_path):
+        if record.get("record") != DECISION_RECORD:
+            continue
+        campaign_id = record.get("campaign_id")
+        if isinstance(campaign_id, str) and campaign_id:
+            latest[campaign_id] = record
+    return latest
+
+
+def campaigns_with_decisions(campaigns_path: str | None = None) -> dict[str, dict]:
+    """Newest campaign per student, each carrying its newest decision or None.
+
+    One pass for the dashboard: a row needs the draft and its state together, and
+    asking for them separately invites rendering one without the other.
+    """
+    decisions = latest_decision_by_campaign(campaigns_path)
+    return {
+        student_id: {
+            **campaign,
+            "decision": decisions.get(campaign.get("campaign_id")),
+        }
+        for student_id, campaign in latest_campaign_by_student(campaigns_path).items()
+    }
 
 
 def clear_campaigns(campaigns_path: str | None = None) -> int:
