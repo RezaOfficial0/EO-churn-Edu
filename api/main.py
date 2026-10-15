@@ -68,7 +68,12 @@ from src.explainer.shap_explainer import create_explainer, explain_customers
 from src.logging_setup import configure_logging, new_request_id, request_id_var
 from src.model.calibrate import churn_proba, load_calibrator
 from src.model.load import check_meta_matches_config, load_meta, load_model
-from src.data.campaigns import append_campaign, latest_campaign_by_student
+from src.data.campaigns import (
+    append_campaign,
+    append_decision,
+    campaigns_with_decisions,
+    latest_campaign_by_student,
+)
 from src.feature_schema import feature_schema
 from src.serialization import to_external
 
@@ -608,18 +613,81 @@ def store_campaign(payload: CampaignIn):
 
 @app.get("/campaigns", dependencies=[Depends(require_api_key)])
 def list_campaigns():
-    """The newest campaign per student, for the dashboard to show next to a row."""
-    latest = latest_campaign_by_student()
+    """The newest campaign per student, for the dashboard to show next to a row.
+
+    Each campaign carries its newest decision, or null when nobody has ruled on
+    it yet. A row that showed a draft without its state would invite a mentor to
+    approve the same draft twice.
+    """
+    latest = campaigns_with_decisions()
     return to_external({"count": len(latest), "campaigns": list(latest.values())})
 
 
 @app.get("/campaigns/{student_id}", dependencies=[Depends(require_api_key)])
 def campaign_for_student(student_id: str):
-    campaign = latest_campaign_by_student().get(student_id)
+    campaign = campaigns_with_decisions().get(student_id)
     if campaign is None:
         # The id is not echoed back (B-12): this body is logged by proxies.
         raise HTTPException(status_code=404, detail="no campaign for that student")
     return to_external(campaign)
+
+
+class DecisionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    decision: Literal["approved", "rejected"]
+    # Who ruled. Free text because this API does not own the customer's identity
+    # system; bounded like every other field, and never used for authorisation.
+    decided_by: _Short
+    note: _Text | None = None
+
+
+@app.post(
+    "/campaigns/{campaign_id}/decision",
+    dependencies=[Depends(require_api_key)],
+    status_code=201,
+)
+def record_decision(campaign_id: str, payload: DecisionIn):
+    """Record that a human approved or rejected one drafted campaign.
+
+    Nothing is sent from here and no draft is altered: the decision is a new line
+    in the same append-only log, so "what was drafted, then what did the mentor
+    do" stays answerable in order. A second decision supersedes the first for
+    readers without erasing it.
+    """
+    campaign = next(
+        (
+            item
+            for item in latest_campaign_by_student().values()
+            if item.get("campaign_id") == campaign_id
+        ),
+        None,
+    )
+    if campaign is None:
+        # Refusing an unknown id keeps the log from collecting decisions about
+        # campaigns that never existed, which no reader could ever resolve.
+        raise HTTPException(status_code=404, detail="no such campaign")
+    try:
+        record = append_decision(
+            {
+                "campaign_id": campaign_id,
+                "student_id": campaign["student_id"],
+                **payload.model_dump(exclude_none=True),
+            }
+        )
+    except (OSError, ValueError):
+        logger.exception("could not store campaign decision")
+        raise HTTPException(
+            status_code=503, detail="campaign store is unavailable"
+        ) from None
+    return to_external(
+        {
+            "status": "recorded",
+            "campaign_id": campaign_id,
+            "decision": record["decision"],
+            "stored_at": record["stored_at"],
+        }
+    )
 
 
 @app.get("/schema", dependencies=[Depends(require_api_key)])
